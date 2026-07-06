@@ -2,10 +2,7 @@
   "tau_deberta_auto": 0.95,
   "tau_human_floor": 0.75,
   "tau_disagreement_reject": 0.85,
-  "llm_target_classes": [
-    "supporting",
-    "undetermined"
-  ],
+  "llm_target_classes": ["supporting", "undetermined"],
   "deberta_model_path": "models/fine_tuned_deberta_base_expanded",
   "score_max": 0.8,
   "score_not_related_cutoff": 0.2,
@@ -16,19 +13,44 @@
     "undetermined": 0.55
   },
   "ollama_host": "http://127.0.0.1:11434",
-  "inference": {
-    "temperature": 0,
-    "num_predict": 512
-  },
+  "inference": {"temperature": 0, "num_predict": 512},
+  "llm_auto_select": true,
+  "llm_profiles": [
+    {
+      "id": "qwen7b",
+      "label": "Qwen2.5-7B x P3",
+      "ollama": "qwen2.5:7b-instruct",
+      "prompt": "P3",
+      "min_ram_gb": 10,
+      "priority": 1
+    },
+    {
+      "id": "phi35",
+      "label": "Phi-3.5-3.8B x P3",
+      "ollama": "phi3.5:3.8b",
+      "prompt": "P3",
+      "min_ram_gb": 6,
+      "priority": 2
+    },
+    {
+      "id": "llama32",
+      "label": "Llama3.2-3B x P3",
+      "ollama": "llama3.2:3b",
+      "prompt": "P3",
+      "min_ram_gb": 6,
+      "priority": 3
+    }
+  ],
   "llm": {
     "label": "Qwen2.5-7B x P3",
     "ollama": "qwen2.5:7b-instruct",
-    "prompt": "P3"
+    "prompt": "P3",
+    "profile_id": "qwen7b"
   },
   "routing": {
     "auto": "confiance DeBERTa >= 95 % : annotation automatique",
-    "llm": "confiance < 95 % ET classe supporting ou undetermined : LLM P3 (toutes bandes, y compris < 75 %)",
-    "deberta_only": "confiance < 95 % ET classe against ou not_related : DeBERTa seul (meme logique < 75 %)",
+    "llm": "confiance < 95 % ET classe supporting ou undetermined : LLM P3",
+    "deberta_only": "confiance < 95 % ET classe against ou not_related : DeBERTa seul",
     "human": "desaccord DeBERTa/LLM + confiance max < 85 % : revue humaine"
   }
 }

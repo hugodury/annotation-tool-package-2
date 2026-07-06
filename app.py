@@ -6,6 +6,9 @@ from datetime import datetime
 import math
 import numpy as np
 import torch
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
 
 # Lazy loaded models
 cross_encoder_model = None
@@ -15,11 +18,6 @@ cascade_engine = None
 def get_cascade_engine():
     global cascade_engine
     if cascade_engine is None:
-        import sys
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        parent_path = os.path.abspath(os.path.join(base_dir, '..'))
-        if parent_path not in sys.path:
-            sys.path.append(parent_path)
         from cascade.core import CascadeEngine
         cascade_engine = CascadeEngine()
     return cascade_engine
@@ -29,20 +27,18 @@ def get_cross_encoder():
     global cross_encoder_model
     if cross_encoder_model is None:
         from sentence_transformers.cross_encoder import CrossEncoder
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        model_path = os.path.join(base_dir, 'models', 'fine_tuned_cross_encoder')
+        model_path = BASE_DIR / 'models' / 'fine_tuned_cross_encoder'
         device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
-        cross_encoder_model = CrossEncoder(model_path, device=device)
+        cross_encoder_model = CrossEncoder(str(model_path), device=device)
     return cross_encoder_model
 
 def get_sbert_model():
     global sbert_model
     if sbert_model is None:
         from sentence_transformers import SentenceTransformer
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        model_path = os.path.join(base_dir, 'models', 'fine_tuned_sbert')
+        model_path = BASE_DIR / 'models' / 'fine_tuned_sbert'
         device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
-        sbert_model = SentenceTransformer(model_path, device=device)
+        sbert_model = SentenceTransformer(str(model_path), device=device)
     return sbert_model
 
 def softmax(x):
@@ -79,6 +75,40 @@ with app.app_context():
 @app.route('/')
 def index():
     return render_template('index.html')
+
+
+@app.route('/api/status')
+def api_status():
+    from cascade.core import load_config
+    import urllib.request
+
+    cfg = load_config()
+    llm = cfg.get("llm", {})
+    models_ok = all(
+        (BASE_DIR / rel).is_file()
+        for rel in [
+            "models/fine_tuned_deberta_base_expanded/model.safetensors",
+            "models/fine_tuned_sbert/model.safetensors",
+            "models/fine_tuned_cross_encoder/model.safetensors",
+        ]
+    )
+    ollama_ok = False
+    try:
+        host = cfg.get("ollama_host", "http://127.0.0.1:11434")
+        with urllib.request.urlopen(f"{host.rstrip('/')}/api/tags", timeout=3) as resp:
+            ollama_ok = resp.status == 200
+    except Exception:
+        pass
+    return jsonify({
+        "ml_models": models_ok,
+        "ollama": ollama_ok,
+        "llm": llm.get("ollama"),
+        "llm_label": llm.get("label"),
+        "device": (
+            "mps" if torch.backends.mps.is_available()
+            else ("cuda" if torch.cuda.is_available() else "cpu")
+        ),
+    })
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
@@ -299,8 +329,13 @@ def auto_annotate():
             
             # Check for LLM service error
             if out.get("error") is not None:
+                llm_tag = engine.llm_cfg.get("ollama", "LLM")
                 return jsonify({
-                    'error': f"Ollama service error: {out['error']}. Please make sure Ollama is running and qwen2.5:7b-instruct is pulled."
+                    'error': (
+                        f"Ollama service error: {out['error']}. "
+                        f"Ensure Ollama is running and model '{llm_tag}' is pulled "
+                        f"(run: python scripts/setup.py)."
+                    )
                 }), 503
                 
             route_name = out["route"]
@@ -365,4 +400,7 @@ def auto_annotate():
     })
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    host = os.environ.get('FLASK_HOST', '127.0.0.1')
+    port = int(os.environ.get('FLASK_PORT', '5000'))
+    debug = os.environ.get('FLASK_DEBUG', '0') == '1'
+    app.run(host=host, port=port, debug=debug)

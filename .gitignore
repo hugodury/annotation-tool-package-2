@@ -13,6 +13,7 @@ annotations.db
 
 # Models (too large for standard GitHub repo)
 models/
+vldbench-models-v1.tar.gz
 
 # OS generated files
 .DS_Store

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import urllib.error
 import urllib.request
@@ -132,7 +133,8 @@ class CascadeEngine:
         model_path = REPO / self.cfg["deberta_model_path"]
         if not model_path.exists():
             raise FileNotFoundError(
-                f"Modele DeBERTa manquant: {model_path}. Lancez train.py d'abord."
+                f"Modele DeBERTa manquant: {model_path}. "
+                "Executez: python scripts/setup.py"
             )
         device = (
             "mps"
@@ -153,13 +155,17 @@ class CascadeEngine:
         sim = float(self.cfg["similarity_defaults"].get(label, 0.5))
         return label, conf, sim
 
+    def _active_llm_tag(self) -> str:
+        return os.environ.get("OLLAMA_LLM_MODEL") or self.llm_cfg["ollama"]
+
     def llm_predict(self, anchor: str, target: str) -> tuple[str, float, float, str | None]:
         prompt_id = self.llm_cfg["prompt"]
         prompt = build_prompt(prompt_id, anchor, target, self.few_shot)
+        model = self._active_llm_tag()
         try:
             raw = ollama_generate(
                 self.cfg["ollama_host"],
-                self.llm_cfg["ollama"],
+                model,
                 prompt,
                 self.cfg["inference"]["temperature"],
                 self.cfg["inference"]["num_predict"],

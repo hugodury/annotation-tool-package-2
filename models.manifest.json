@@ -1,0 +1,25 @@
+{
+  "version": "1.0.0",
+  "description": "Fine-tuned VLDBench models (DeBERTa, SBERT, cross-encoder)",
+  "archive": {
+    "filename": "vldbench-models-v1.tar.gz",
+    "size_bytes": 1516855552,
+    "urls": [
+      "https://github.com/Cespriet/annotation-tool-package-2/releases/download/v1.0.0/vldbench-models-v1.tar.gz",
+      "${MODELS_DOWNLOAD_URL}"
+    ]
+  },
+  "required_files": [
+    "models/fine_tuned_deberta_base_expanded/model.safetensors",
+    "models/fine_tuned_deberta_base_expanded/config.json",
+    "models/fine_tuned_sbert/model.safetensors",
+    "models/fine_tuned_sbert/config.json",
+    "models/fine_tuned_cross_encoder/model.safetensors",
+    "models/fine_tuned_cross_encoder/config.json"
+  ],
+  "checksums": {
+    "models/fine_tuned_deberta_base_expanded/model.safetensors": "274dc1ebd29011f44573ff087be05bab7d266f174fcd0284aceef4261c8eedb8",
+    "models/fine_tuned_sbert/model.safetensors": "bacf07a53813dc3b0f4e8027054a8527fdb84f3e7db7c14ff89fbc21eb5cffae",
+    "models/fine_tuned_cross_encoder/model.safetensors": "c5d5294702c0b7ecd835c05ee8848a163fd71616e121848a53073f1ad35c0b5f"
+  }
+}
