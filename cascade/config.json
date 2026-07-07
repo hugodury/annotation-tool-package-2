@@ -13,7 +13,7 @@
     "undetermined": 0.55
   },
   "ollama_host": "http://127.0.0.1:11434",
-  "inference": {"temperature": 0, "num_predict": 512},
+  "inference": {"temperature": 0, "num_predict": 512, "timeout": 1800, "keep_alive": "30m"},
   "llm_auto_select": true,
   "llm_profiles": [
     {

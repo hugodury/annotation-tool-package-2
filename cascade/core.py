@@ -104,12 +104,21 @@ def build_prompt(prompt_id: str, anchor: str, target: str, few_shot: list[dict])
     )
 
 
-def ollama_generate(host: str, model: str, prompt: str, temperature: float, num_predict: int) -> str:
+def ollama_generate(
+    host: str,
+    model: str,
+    prompt: str,
+    temperature: float,
+    num_predict: int,
+    timeout: int = 1800,
+    keep_alive: str = "30m",
+) -> str:
     payload = json.dumps(
         {
             "model": model,
             "prompt": prompt,
             "stream": False,
+            "keep_alive": keep_alive,
             "options": {"temperature": temperature, "num_predict": num_predict},
         }
     ).encode()
@@ -118,7 +127,7 @@ def ollama_generate(host: str, model: str, prompt: str, temperature: float, num_
         data=payload,
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=300) as resp:
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read())["response"]
 
 
@@ -162,15 +171,18 @@ class CascadeEngine:
         prompt_id = self.llm_cfg["prompt"]
         prompt = build_prompt(prompt_id, anchor, target, self.few_shot)
         model = self._active_llm_tag()
+        inf = self.cfg["inference"]
         try:
             raw = ollama_generate(
                 self.cfg["ollama_host"],
                 model,
                 prompt,
-                self.cfg["inference"]["temperature"],
-                self.cfg["inference"]["num_predict"],
+                inf["temperature"],
+                inf["num_predict"],
+                timeout=int(inf.get("timeout", 1800)),
+                keep_alive=str(inf.get("keep_alive", "30m")),
             )
-        except (urllib.error.URLError, TimeoutError) as e:
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
             return "undetermined", 0.0, 0.5, str(e)
         parsed = parse_llm_json(raw) or {}
         label, score = postprocess_prediction(
