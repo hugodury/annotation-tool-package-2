@@ -305,6 +305,19 @@
             justify-content: center;
             flex-direction: column;
         }
+
+        .system-banner {
+            border-radius: 10px;
+            padding: 1rem 1.25rem;
+            margin-bottom: 1.5rem;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+        }
+        .system-banner.ok { background: #d1e7dd; border-left: 5px solid #198754; }
+        .system-banner.warn { background: #fff3cd; border-left: 5px solid #ffc107; }
+        .system-banner.error { background: #f8d7da; border-left: 5px solid #dc3545; }
+        .system-banner ul { margin: 0.5rem 0 0 1.2rem; padding: 0; }
+        .system-banner li { margin-bottom: 0.25rem; }
+        .system-banner-title { font-weight: 700; display: flex; align-items: center; gap: 0.5rem; }
     </style>
 </head>
 <body>
@@ -320,6 +333,11 @@
         <div class="header">
             <img src="{{ url_for('static', filename='logo.jpeg') }}" alt="Project Logo" class="logo" onerror="this.style.display='none'">
             <h1>News Annotation Tool</h1>
+        </div>
+
+        <div id="systemHealthBanner" class="system-banner ok" style="display:none;">
+            <div class="system-banner-title"><i class="fas fa-heartbeat"></i> <span id="systemBannerTitle">System check</span></div>
+            <ul id="systemBannerList"></ul>
         </div>
         
         <div class="row mb-4">
@@ -387,6 +405,119 @@
         let currentData = null;
         let processedIds = [];
         let currentIndex = 0;
+        let systemReport = null;
+
+        async function loadSystemHealth() {
+            const banner = document.getElementById('systemHealthBanner');
+            const title = document.getElementById('systemBannerTitle');
+            const list = document.getElementById('systemBannerList');
+            const runBtn = document.getElementById('runAutoAnnotate');
+            const perfLabels = {
+                good: 'Performance : bonne',
+                acceptable: 'Performance : correcte (Qwen 7B lent)',
+                slow: 'Performance : lente (CPU)',
+                insufficient: 'Performance : insuffisante'
+            };
+            try {
+                const resp = await fetch('/api/status');
+                systemReport = await resp.json();
+                const hw = systemReport.hardware || {};
+                const plat = systemReport.platform || {};
+                const items = [];
+                const ollamaEnsure = systemReport.ollama_ensure || {};
+
+                if (ollamaEnsure.status === 'running') {
+                    banner.className = 'system-banner warn';
+                    title.textContent = 'Préparation Ollama et LLM en cours…';
+                    items.push(`⏳ ${ollamaEnsure.message || 'Démarrage automatique d\'Ollama et téléchargement du LLM'}`);
+                } else if (systemReport.errors && systemReport.errors.length) {
+                    banner.className = 'system-banner error';
+                    title.textContent = 'Problèmes détectés — Run Model reste disponible';
+                    systemReport.errors.forEach(e => items.push(`✗ ${e}`));
+                } else if (systemReport.warnings && systemReport.warnings.length) {
+                    banner.className = 'system-banner warn';
+                    title.textContent = 'Configuration limitée — Run Model possible (peut être lent)';
+                    systemReport.warnings.forEach(w => items.push(`⚠ ${w}`));
+                } else {
+                    banner.className = 'system-banner ok';
+                    title.textContent = 'Configuration compatible — Run Model prêt';
+                }
+                runBtn.disabled = false;
+
+                if (plat.os) items.push(`Système : ${plat.os} (${plat.arch || '?'})`);
+                if (plat.python) items.push(`Python : ${plat.python}`);
+                if (hw.ram_gb) items.push(`RAM : ${hw.ram_gb} Go`);
+                if (hw.disk_free_gb != null) {
+                    let diskLine = `Disque libre : ${hw.disk_free_gb} Go`;
+                    if (hw.disk_required_gb) diskLine += ` / ~${hw.disk_required_gb} Go requis`;
+                    if (hw.disk_ok === false) diskLine += ' — insuffisant';
+                    items.push(diskLine);
+                }
+                if (hw.gpu && hw.gpu.label) items.push(`Accélération : ${hw.gpu.label}`);
+                if (systemReport.ollama) {
+                    const o = systemReport.ollama;
+                    let ollamaLine = `Ollama : ${o.installed ? 'installé' : 'absent'} / ${o.running ? 'actif' : 'inactif'}`;
+                    if (o.installed && o.models && o.models.length) {
+                        ollamaLine += ` (${o.models.length} modèle(s))`;
+                    }
+                    items.push(ollamaLine);
+                }
+                if (systemReport.ml_models === false) items.push('Modèles ML : manquants — relancez ./start.sh');
+                else if (systemReport.ml_models) items.push('Modèles ML (DeBERTa, SBERT) : OK');
+                if (systemReport.active_llm && systemReport.active_llm.label) {
+                    items.push(`LLM actif : ${systemReport.active_llm.label}`);
+                } else if (systemReport.recommended_llm) {
+                    items.push(`LLM recommandé : ${systemReport.recommended_llm.label}`);
+                }
+                if (systemReport.performance_label) {
+                    items.push(systemReport.performance_label);
+                } else if (systemReport.performance) {
+                    items.push(perfLabels[systemReport.performance] || systemReport.performance);
+                }
+                if (systemReport.notes && systemReport.notes.length) {
+                    systemReport.notes.forEach(n => items.push(`ℹ ${n}`));
+                }
+                if (systemReport.errors && systemReport.errors.length && systemReport.ollama_download_url) {
+                    items.push(`→ Ollama : ${systemReport.ollama_download_url}`);
+                }
+                if (systemReport.errors && systemReport.errors.length && systemReport.python_download_url) {
+                    items.push(`→ Python : ${systemReport.python_download_url}`);
+                }
+
+                list.innerHTML = items.map(t => `<li>${t}</li>`).join('');
+                banner.style.display = 'block';
+            } catch (e) {
+                banner.className = 'system-banner warn';
+                title.textContent = 'Impossible de vérifier la configuration';
+                list.innerHTML = '<li>Rechargez la page ou relancez ./start.sh</li>';
+                banner.style.display = 'block';
+            }
+        }
+
+        async function ensureOllamaBackground() {
+            try {
+                await fetch('/api/ensure-ollama', { method: 'POST' });
+            } catch (e) {
+                /* retry via polling status */
+            }
+        }
+
+        let ollamaPollTimer = null;
+        function scheduleOllamaPoll() {
+            if (ollamaPollTimer) return;
+            ollamaPollTimer = setInterval(async () => {
+                await loadSystemHealth();
+                const st = systemReport && systemReport.ollama_ensure ? systemReport.ollama_ensure.status : null;
+                const running = systemReport && systemReport.ollama && systemReport.ollama.running;
+                if (st === 'ready' || st === 'error' || running) {
+                    clearInterval(ollamaPollTimer);
+                    ollamaPollTimer = null;
+                }
+            }, 4000);
+        }
+
+        ensureOllamaBackground();
+        loadSystemHealth().then(scheduleOllamaPoll);
 
         document.getElementById('uploadForm').addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -726,6 +857,19 @@
             const end = document.getElementById('autoEnd').value;
             
             if(!currentData) return alert("Please load a JSON file first.");
+
+            const advisories = [
+                ...(systemReport?.errors || []),
+                ...(systemReport?.warnings || []),
+            ];
+            if (advisories.length) {
+                const proceed = confirm(
+                    "Avertissements sur votre configuration :\n\n" +
+                    advisories.join("\n") +
+                    "\n\nL'annotation peut être lente ou partielle. Continuer quand même ?"
+                );
+                if (!proceed) return;
+            }
             
             document.getElementById('loadingOverlay').style.display = 'flex';
             const statusDiv = document.getElementById('autoAnnotateStatus');

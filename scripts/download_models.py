@@ -16,6 +16,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST_PATH = ROOT / "models.manifest.json"
 
+sys.path.insert(0, str(ROOT / "scripts"))
+from disk_check import require_disk_for_models  # noqa: E402
+
 
 def _sha256(path: Path) -> str:
     h = hashlib.sha256()
@@ -91,6 +94,8 @@ def download_models(force: bool = False) -> bool:
     if not force and models_complete(manifest):
         print("ML models already present and verified.")
         return True
+
+    require_disk_for_models(ROOT)
 
     archive_name = manifest.get("archive", {}).get("filename", "vldbench-models-v1.tar.gz")
     urls = _resolve_urls(manifest)

@@ -9,31 +9,23 @@ import platform
 import shutil
 import subprocess
 import sys
-import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 VENV_DIR = ROOT / "venv"
 IS_WINDOWS = platform.system() == "Windows"
 
+sys.path.insert(0, str(ROOT / "scripts"))
+from disk_check import estimate_disk_need  # noqa: E402
+from ollama_service import ensure_ollama_ready  # noqa: E402
+from prerequisites import ensure_ollama_binary, ensure_python  # noqa: E402
+from system_check import build_report, print_report, ram_gb  # noqa: E402
+
 
 def venv_python() -> Path:
     if IS_WINDOWS:
         return VENV_DIR / "Scripts" / "python.exe"
     return VENV_DIR / "bin" / "python"
-
-
-def find_python() -> str:
-    for cmd in ("python3", "python", "py"):
-        if shutil.which(cmd):
-            try:
-                subprocess.run([cmd, "--version"], check=True, capture_output=True)
-                return cmd
-            except (subprocess.CalledProcessError, FileNotFoundError):
-                continue
-    raise RuntimeError("Python 3.9+ not found. Install from https://www.python.org/downloads/")
 
 
 def run(cmd: list[str], **kwargs) -> None:
@@ -87,182 +79,14 @@ def ensure_models(python_cmd: str | None = None) -> None:
     run([py, str(ROOT / "scripts" / "download_models.py")])
 
 
-def ollama_available(host: str) -> bool:
-    try:
-        with urllib.request.urlopen(f"{host.rstrip('/')}/api/tags", timeout=3) as resp:
-            return resp.status == 200
-    except (urllib.error.URLError, TimeoutError, OSError):
-        return False
-
-
-def ollama_installed_models(host: str) -> set[str]:
-    try:
-        with urllib.request.urlopen(f"{host.rstrip('/')}/api/tags", timeout=10) as resp:
-            data = json.loads(resp.read())
-        names: set[str] = set()
-        for m in data.get("models", []):
-            names.add(m.get("name", "").split(":")[0])
-            names.add(m.get("name", ""))
-        return names
-    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
-        return set()
-
-
-def system_ram_gb() -> float:
-    try:
-        if IS_WINDOWS:
-            ps = (
-                "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory"
-            )
-            out = subprocess.check_output(
-                ["powershell", "-NoProfile", "-Command", ps],
-                text=True,
-                stderr=subprocess.DEVNULL,
-            ).strip()
-            if out.isdigit():
-                return int(out) / (1024**3)
-        elif platform.system() == "Darwin":
-            out = subprocess.check_output(
-                ["sysctl", "-n", "hw.memsize"],
-                text=True,
-                stderr=subprocess.DEVNULL,
-            ).strip()
-            return int(out) / (1024**3)
-        else:
-            with open("/proc/meminfo") as f:
-                for line in f:
-                    if line.startswith("MemTotal:"):
-                        kb = int(line.split()[1])
-                        return kb / (1024**2)
-    except (OSError, subprocess.CalledProcessError, ValueError):
-        pass
-    return 8.0
-
-
 def load_cascade_config() -> dict:
     path = ROOT / "cascade" / "config.json"
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def save_active_llm(cfg: dict, profile: dict) -> None:
-    cfg["llm"] = {
-        "label": profile["label"],
-        "ollama": profile["ollama"],
-        "prompt": profile.get("prompt", "P3"),
-        "profile_id": profile["id"],
-    }
-    path = ROOT / "cascade" / "config.json"
-    path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-
-
-def _model_installed(tag: str, installed: set[str]) -> bool:
-    return tag in installed or tag.split(":")[0] in installed
-
-
-def select_llm_profile(cfg: dict, installed: set[str]) -> dict | None:
-    override = os.environ.get("OLLAMA_LLM_MODEL", "").strip()
-    profiles: list[dict] = cfg.get("llm_profiles", [])
-    ram = system_ram_gb()
-
-    if override:
-        for p in profiles:
-            if p["ollama"] == override or p["id"] == override:
-                return p
-        return {"id": "custom", "label": override, "ollama": override, "prompt": "P3", "min_ram_gb": 0}
-
-    if not cfg.get("llm_auto_select", True):
-        return cfg.get("llm")
-
-    candidates = sorted(profiles, key=lambda p: p.get("priority", 99))
-
-    # Prefer an already-pulled model that fits this machine.
-    for p in candidates:
-        if _model_installed(p["ollama"], installed) and ram >= p.get("min_ram_gb", 0) - 1:
-            return p
-
-    # Nothing installed yet: pick the best profile for available RAM (smallest fallback last).
-    for p in candidates:
-        if ram >= p.get("min_ram_gb", 0) - 1:
-            return p
-    return candidates[-1] if candidates else None
-
-
-def ollama_pull(model: str) -> bool:
-    if not shutil.which("ollama"):
-        return False
-    print(f"Pulling Ollama model: {model} (may take several minutes)...")
-    try:
-        subprocess.run(["ollama", "pull", model], check=True)
-        return True
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return False
-
-
 def ensure_ollama_llm(cfg: dict) -> None:
-    host = cfg.get("ollama_host", "http://127.0.0.1:11434")
-
-    if not shutil.which("ollama"):
-        print(
-            "\nERROR: Ollama is required but not installed.\n"
-            "  1. Install from https://ollama.com/download\n"
-            "  2. Re-run: ./start.sh  (or start.bat on Windows)\n"
-            "\nDeBERTa-only annotation works without Ollama, but LLM arbitration will fail."
-        )
-        if os.environ.get("REQUIRE_OLLAMA", "0") == "1":
-            raise RuntimeError("Ollama not installed")
-        return
-
-    if not ollama_available(host):
-        print("Ollama not responding — attempting to start ollama serve...")
-        if IS_WINDOWS:
-            subprocess.Popen(
-                ["ollama", "serve"],
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        else:
-            subprocess.Popen(
-                ["ollama", "serve"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-        for _ in range(15):
-            time.sleep(1)
-            if ollama_available(host):
-                break
-        else:
-            print(
-                f"WARNING: Ollama not reachable at {host}.\n"
-                "  Start it manually: ollama serve"
-            )
-            return
-
-    installed = ollama_installed_models(host)
-    profile = select_llm_profile(cfg, installed)
-    if not profile:
-        print("WARNING: No LLM profile configured in cascade/config.json")
-        return
-
-    tag = profile["ollama"]
-    if not _model_installed(tag, installed):
-        if not ollama_pull(tag):
-            fallbacks = sorted(
-                [p for p in cfg.get("llm_profiles", []) if p["ollama"] != tag],
-                key=lambda p: p.get("priority", 99),
-            )
-            for fb in fallbacks:
-                print(f"Trying fallback LLM: {fb['ollama']}")
-                if ollama_pull(fb["ollama"]):
-                    profile = fb
-                    break
-            else:
-                print("WARNING: Could not pull any LLM model.")
-                return
-
-    save_active_llm(cfg, profile)
-    print(f"Active LLM: {profile['label']} ({profile['ollama']})")
+    print("Préparation Ollama (service + LLM)...")
+    ensure_ollama_ready(cfg, ROOT / "cascade" / "config.json", install_binary=True, pull_llm=True)
 
 
 def open_browser(url: str) -> None:
@@ -303,11 +127,25 @@ def main() -> int:
     args = parser.parse_args()
 
     print("=== ISIALAB Annotation Interface — Setup ===")
-    print(f"Platform: {platform.system()} {platform.machine()}")
-    print(f"RAM: ~{system_ram_gb():.1f} Go")
 
     try:
-        python_cmd = find_python()
+        python_cmd = ensure_python()
+
+        if not args.skip_llm:
+            ensure_ollama_binary()
+
+        cfg = load_cascade_config()
+        disk = estimate_disk_need(ROOT, cfg, ram_gb_val=ram_gb())
+        if not disk.get("disk_ok"):
+            print(
+                f"⚠ Espace disque limité : {disk['disk_free_gb']} Go libres, "
+                f"~{disk['disk_required_gb']} Go recommandés."
+            )
+        else:
+            print(
+                f"Espace disque : {disk['disk_free_gb']} Go libres "
+                f"(besoin estimé ~{disk['disk_required_gb']} Go)"
+            )
 
         if not args.skip_models:
             ensure_models(python_cmd)
@@ -320,7 +158,12 @@ def main() -> int:
         if not args.skip_llm:
             ensure_ollama_llm(cfg)
 
-        print("\nSetup complete.")
+        report = build_report(ROOT, cfg)
+        print_report(report)
+        if report["errors"]:
+            print("\n⚠ Avertissements détectés — l'application démarre quand même.")
+
+        print("\nSetup complete — vous pouvez utiliser Run Model (avertissements possibles).")
 
         if args.start:
             start_app(args.host, args.port, not args.no_browser)

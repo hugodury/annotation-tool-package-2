@@ -3,7 +3,7 @@
 ## Réponse courte
 
 **Non**, un simple `git clone` ne suffit pas : les poids ML (~1,5 Go) ne sont pas versionnés dans Git.
-Avec ce guide + une **GitHub Release** des modèles, l'auto-annotation DeBERTa / Qwen / mini-LLM fonctionne sur **Windows, macOS et Linux**.
+Avec ce guide + une **GitHub Release** des modèles, l'auto-annotation DeBERTa / Qwen 7B fonctionne sur **Windows, macOS et Linux**.
 
 ---
 
@@ -13,8 +13,8 @@ Avec ce guide + une **GitHub Release** des modèles, l'auto-annotation DeBERTa /
 |-----------|---------|-------|-------|
 | Python 3.9+ | ✓ | ✓ | ✓ |
 | Ollama | [ollama.com](https://ollama.com/) | idem | idem |
-| RAM | 6 Go (mini-LLM) / 10 Go (Qwen 7B) | idem | idem |
-| Disque | ~5 Go (app + 1 LLM) / ~15 Go (tout) | idem | idem |
+| RAM | 10 Go recommandés (Qwen 7B) | idem | idem |
+| Disque | ~12–15 Go (app + modèles ML + LLM) | idem | idem |
 
 ---
 
@@ -22,7 +22,7 @@ Avec ce guide + une **GitHub Release** des modèles, l'auto-annotation DeBERTa /
 
 ### Mac / Linux
 ```bash
-git clone https://github.com/Cespriet/annotation-tool-package-2.git
+git clone https://github.com/hugodury/annotation-tool-package-2.git
 cd annotation-tool-package-2
 chmod +x start.sh
 ./start.sh
@@ -30,7 +30,7 @@ chmod +x start.sh
 
 ### Windows (PowerShell)
 ```powershell
-git clone https://github.com/Cespriet/annotation-tool-package-2.git
+git clone https://github.com/hugodury/annotation-tool-package-2.git
 cd annotation-tool-package-2
 powershell -ExecutionPolicy Bypass -File .\start.ps1
 ```
@@ -39,23 +39,21 @@ Le script `scripts/setup.py` :
 1. Crée le venv Python
 2. Installe PyTorch (CPU / CUDA / MPS selon la machine)
 3. Télécharge les modèles DeBERTa + SBERT + cross-encoder
-4. Démarre Ollama si besoin et choisit le LLM (Qwen 7B ou mini-modèle selon la RAM)
+4. Démarre Ollama si besoin et télécharge Qwen 7B
 5. Lance l'app sur http://127.0.0.1:5000
 
 ---
 
-## Sélection automatique du LLM
+## LLM
 
 | Profil | Modèle Ollama | RAM min | Usage |
 |--------|---------------|---------|-------|
-| qwen7b | `qwen2.5:7b-instruct` | 10 Go | Meilleure qualité |
-| phi35 | `phi3.5:3.8b` | 6 Go | PC modeste |
-| llama32 | `llama3.2:3b` | 6 Go | Fallback léger |
+| qwen7b | `qwen2.5:7b-instruct` | 10 Go | LLM de la cascade |
 
-Forcer un modèle :
+Forcer un autre modèle Ollama :
 ```bash
-export OLLAMA_LLM_MODEL=phi3.5:3.8b   # Mac/Linux
-set OLLAMA_LLM_MODEL=phi3.5:3.8b       # Windows CMD
+export OLLAMA_LLM_MODEL=qwen2.5:7b-instruct   # Mac/Linux
+set OLLAMA_LLM_MODEL=qwen2.5:7b-instruct       # Windows CMD
 ```
 
 ---
@@ -97,7 +95,7 @@ docker compose up --build
 
 Après le premier démarrage, entrer dans le conteneur ollama pour pull le LLM :
 ```bash
-docker compose exec ollama ollama pull phi3.5:3.8b
+docker compose exec ollama ollama pull qwen2.5:7b-instruct
 ```
 
 ---
@@ -112,9 +110,8 @@ Réponse attendue :
 ```json
 {
   "ml_models": true,
-  "ollama": true,
-  "llm": "phi3.5:3.8b",
-  "device": "cpu"
+  "ollama": { "installed": true, "running": true },
+  "active_llm": { "ollama": "qwen2.5:7b-instruct" }
 }
 ```
 
@@ -125,6 +122,6 @@ Réponse attendue :
 | Problème | Solution |
 |----------|----------|
 | `Modele DeBERTa manquant` | `python scripts/setup.py` |
-| `Ollama service error` | `ollama serve` puis `ollama pull phi3.5:3.8b` |
-| PyTorch lent | Normal en CPU ; installer CUDA ou utiliser un mini-LLM |
+| `Ollama service error` | `ollama serve` puis `ollama pull qwen2.5:7b-instruct` |
+| PyTorch lent | Normal en CPU ; installer CUDA si GPU NVIDIA |
 | Download échoue | Publier la Release ou définir `MODELS_DOWNLOAD_URL` |

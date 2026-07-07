@@ -1,7 +1,7 @@
 # ISIALAB Annotation Interface
 
 Application web Flask pour l'annotation VLDBench avec **cascade automatique** :
-**DeBERTa-v3** → **LLM local (Qwen / Phi / Llama)** → revue humaine.
+**DeBERTa-v3** → **LLM local (Qwen 7B)** → revue humaine.
 
 Fonctionne sur **Windows, macOS et Linux** via un setup unifié.
 
@@ -25,7 +25,7 @@ Le script de démarrage installe tout le reste (venv, PyTorch, modèles ML, LLM 
 ## Modèles ML (DeBERTa, SBERT)
 
 Les poids fine-tunés (~1,5 Go) ne sont **pas** dans Git.
-Au premier lancement, `scripts/setup.py` les télécharge depuis la [Release GitHub v1.0.0](https://github.com/Cespriet/annotation-tool-package-2/releases/tag/v1.0.0).
+Au premier lancement, `scripts/setup.py` les télécharge depuis la [Release GitHub v1.0.0](https://github.com/hugodury/annotation-tool-package-2/releases/tag/v1.0.0).
 
 Sans release publiée, définir :
 ```bash
@@ -34,11 +34,9 @@ export MODELS_DOWNLOAD_URL=https://votre-hébergeur/vldbench-models-v1.tar.gz
 
 ## LLM local
 
-Sélection automatique selon la RAM :
-- **Qwen2.5-7B** — machines avec ≥10 Go RAM
-- **Phi-3.5-3.8B** ou **Llama3.2-3B** — PC modestes (≥6 Go)
+Modèle utilisé : **Qwen2.5-7B** (`qwen2.5:7b-instruct`) — ≥10 Go RAM recommandés.
 
-Forcer un modèle : `OLLAMA_LLM_MODEL=phi3.5:3.8b ./start.sh`
+Forcer un autre modèle Ollama : `OLLAMA_LLM_MODEL=mon-modele:tag ./start.sh`
 
 ## Utilisation
 

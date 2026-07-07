@@ -2,6 +2,7 @@ from flask import Flask, render_template, request, jsonify, send_file
 from flask_sqlalchemy import SQLAlchemy
 import json
 import os
+import sys
 from datetime import datetime
 import math
 import numpy as np
@@ -9,6 +10,13 @@ import torch
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(BASE_DIR / "scripts"))
+from ollama_service import (  # noqa: E402
+    ensure_ollama_ready,
+    ensure_ollama_ready_async,
+    ensure_state,
+)
+from system_check import build_report  # noqa: E402
 
 # Lazy loaded models
 cross_encoder_model = None
@@ -72,6 +80,15 @@ class ProcessedNews(db.Model):
 with app.app_context():
     db.create_all()
 
+
+def _load_cascade_config() -> dict:
+    cfg_path = BASE_DIR / "cascade" / "config.json"
+    return json.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.is_file() else {}
+
+
+# Au démarrage : installer/démarrer Ollama et télécharger le LLM en arrière-plan.
+ensure_ollama_ready_async(_load_cascade_config(), BASE_DIR / "cascade" / "config.json")
+
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -80,35 +97,30 @@ def index():
 @app.route('/api/status')
 def api_status():
     from cascade.core import load_config
-    import urllib.request
-
     cfg = load_config()
-    llm = cfg.get("llm", {})
-    models_ok = all(
-        (BASE_DIR / rel).is_file()
-        for rel in [
-            "models/fine_tuned_deberta_base_expanded/model.safetensors",
-            "models/fine_tuned_sbert/model.safetensors",
-            "models/fine_tuned_cross_encoder/model.safetensors",
-        ]
-    )
-    ollama_ok = False
+    report = build_report(BASE_DIR, cfg)
+    report["ollama_ensure"] = ensure_state()
+    return jsonify(report)
+
+
+@app.route('/api/ensure-ollama', methods=['POST'])
+def api_ensure_ollama():
+    """Démarre Ollama et télécharge le LLM si nécessaire (appel synchrone)."""
+    cfg_path = BASE_DIR / "cascade" / "config.json"
+    cfg = _load_cascade_config()
     try:
-        host = cfg.get("ollama_host", "http://127.0.0.1:11434")
-        with urllib.request.urlopen(f"{host.rstrip('/')}/api/tags", timeout=3) as resp:
-            ollama_ok = resp.status == 200
-    except Exception:
-        pass
-    return jsonify({
-        "ml_models": models_ok,
-        "ollama": ollama_ok,
-        "llm": llm.get("ollama"),
-        "llm_label": llm.get("label"),
-        "device": (
-            "mps" if torch.backends.mps.is_available()
-            else ("cuda" if torch.cuda.is_available() else "cpu")
-        ),
-    })
+        ensure_ollama_ready(cfg, cfg_path, install_binary=True, pull_llm=True, quiet=True)
+        report = build_report(BASE_DIR, cfg)
+        report["ollama_ensure"] = ensure_state()
+        return jsonify({"ok": True, "report": report})
+    except RuntimeError as e:
+        return jsonify({"ok": False, "error": str(e), "ollama_ensure": ensure_state()}), 503
+
+
+@app.route('/api/system-check')
+def api_system_check():
+    """Alias explicite pour la vérification machine (même payload que /api/status)."""
+    return api_status()
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
@@ -275,6 +287,20 @@ def auto_annotate():
         
     if start_index < 0 or end_index >= len(data) or start_index > end_index:
         return jsonify({'error': 'Invalid index range'}), 400
+
+    cfg_path = BASE_DIR / "cascade" / "config.json"
+    cfg = _load_cascade_config()
+    try:
+        ensure_ollama_ready(cfg, cfg_path, install_binary=False, pull_llm=True, quiet=True)
+    except RuntimeError as e:
+        return jsonify({
+            'error': (
+                f"Ollama / LLM indisponible : {e}. "
+                "L'application tente de démarrer Ollama automatiquement — réessayez dans quelques instants."
+            )
+        }), 503
+    report = build_report(BASE_DIR, cfg)
+    # Run Model toujours autorisé — les avertissements sont informatifs seulement.
         
     try:
         engine = get_cascade_engine()

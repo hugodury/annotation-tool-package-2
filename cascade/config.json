@@ -22,23 +22,8 @@
       "ollama": "qwen2.5:7b-instruct",
       "prompt": "P3",
       "min_ram_gb": 10,
+      "min_disk_gb": 6,
       "priority": 1
-    },
-    {
-      "id": "phi35",
-      "label": "Phi-3.5-3.8B x P3",
-      "ollama": "phi3.5:3.8b",
-      "prompt": "P3",
-      "min_ram_gb": 6,
-      "priority": 2
-    },
-    {
-      "id": "llama32",
-      "label": "Llama3.2-3B x P3",
-      "ollama": "llama3.2:3b",
-      "prompt": "P3",
-      "min_ram_gb": 6,
-      "priority": 3
     }
   ],
   "llm": {
