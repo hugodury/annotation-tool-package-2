@@ -5,6 +5,15 @@ Application web Flask pour l'annotation VLDBench avec **cascade automatique** :
 
 Fonctionne sur **Windows, macOS et Linux** via un setup unifié (`start.sh` / `start.bat` / `start.ps1`).
 
+**Dépôt :** https://github.com/hugodury/annotation-tool-package-2
+
+```bash
+git clone https://github.com/hugodury/annotation-tool-package-2.git
+cd annotation-tool-package-2
+```
+
+> **1er lancement** : 15–45 min selon la machine (téléchargements + installation). Internet requis une seule fois.
+
 ## Démarrage rapide
 
 | OS | Commande |
@@ -76,6 +85,22 @@ Configurés dans `cascade/config.json` :
 5. Télécharger le JSON annoté
 
 Protocole : `protocole.md`
+
+**Session** : *Resume Last Session* reprend le dernier fichier ; re-uploader un JSON déjà annoté conserve les statuts.
+
+## Dépannage rapide
+
+```bash
+# Vérifier la machine (sans lancer l'app)
+python scripts/system_check.py
+
+# Relancer le setup complet
+./start.sh
+```
+
+Variables optionnelles : copier `.env.example` vers `.env` (`OLLAMA_LLM_MODEL`, `MODELS_DOWNLOAD_URL`, etc.).
+
+Si Run Model s'arrête en cours de route, la progression partielle est sauvegardée (JSON + base locale).
 
 ## API statut
 
