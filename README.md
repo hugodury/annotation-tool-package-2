@@ -3,7 +3,7 @@
 Application web Flask pour l'annotation VLDBench avec **cascade automatique** :
 **DeBERTa-v3** → **LLM local (Qwen 7B)** → revue humaine.
 
-Fonctionne sur **Windows, macOS et Linux** via un setup unifié.
+Fonctionne sur **Windows, macOS et Linux** via un setup unifié (`start.sh` / `start.bat` / `start.ps1`).
 
 ## Démarrage rapide
 
@@ -17,33 +17,63 @@ Ouvrir http://127.0.0.1:5000
 
 ## Prérequis
 
-1. **Python 3.9+** — https://www.python.org/downloads/
-2. **Ollama** — https://ollama.com/
+| Élément | Détail |
+|---------|--------|
+| Python | 3.9+ (3.12+ recommandé) — [python.org](https://www.python.org/downloads/) |
+| Ollama | [ollama.com](https://ollama.com/) |
+| RAM | 10 Go recommandés (Qwen 7B) |
+| Disque (1er lancement) | **~13 Go libres** (venv, modèles ML, LLM, marge) |
+| Disque (une fois installé) | **~8 Go** au total |
 
-Le script de démarrage installe tout le reste (venv, PyTorch, modèles ML, LLM Ollama).
+Le script de démarrage installe le reste : venv, PyTorch (CPU / CUDA / MPS), modèles ML, pull Qwen via Ollama.
+
+## Checklist Configuration (interface web)
+
+Au chargement de l'app, une checklist vérifie **8 prérequis obligatoires** :
+
+- Python, PyTorch, sentence-transformers ≥ 5.5
+- Modèles ML (DeBERTa, SBERT, cross-encoder)
+- Ollama installé et actif
+- LLM `qwen2.5:7b-instruct` téléchargé
+
+**Run Model** n'est disponible que si tous ces points sont ✓ (bouton désactivé + blocage API sinon).
+RAM, GPU et performance sont informatifs seulement.
 
 ## Modèles ML (DeBERTa, SBERT)
 
 Les poids fine-tunés (~1,5 Go) ne sont **pas** dans Git.
 Au premier lancement, `scripts/setup.py` les télécharge depuis la [Release GitHub v1.0.0](https://github.com/hugodury/annotation-tool-package-2/releases/tag/v1.0.0).
 
-Sans release publiée, définir :
+Sans release publiée :
 ```bash
 export MODELS_DOWNLOAD_URL=https://votre-hébergeur/vldbench-models-v1.tar.gz
 ```
 
 ## LLM local
 
-Modèle utilisé : **Qwen2.5-7B** (`qwen2.5:7b-instruct`) — ≥10 Go RAM recommandés.
+Modèle : **Qwen2.5-7B** (`qwen2.5:7b-instruct`).
 
-Forcer un autre modèle Ollama : `OLLAMA_LLM_MODEL=mon-modele:tag ./start.sh`
+Forcer un autre modèle : `OLLAMA_LLM_MODEL=mon-modele:tag ./start.sh`
+
+### Timeouts et keep_alive
+
+Configurés dans `cascade/config.json` :
+
+| Paramètre | Valeur | Rôle |
+|-----------|--------|------|
+| `inference.timeout` | 300 s (5 min) | Temps max par appel LLM |
+| `run_model.no_annotation_timeout` | 360 s (6 min) | Arrêt si aucune cible pré-remplie |
+| `inference.keep_alive` | 30 min | Qwen reste en RAM après le dernier appel LLM (appels suivants plus rapides) |
+
+`keep_alive` n'est pas une limite de session : chaque appel LLM renouvelle le délai.
 
 ## Utilisation
 
 1. Uploader un fichier JSON d'annotation
-2. Cliquer **Auto-annotate** — la cascade remplit `related` et `similarity_annotation`
-3. Corriger manuellement les paires flaggées « human review »
-4. Télécharger le JSON annoté
+2. Vérifier la checklist **Configuration** (badge « Tout installé »)
+3. Cliquer **Run Model** — la cascade remplit `related` et `similarity_annotation`
+4. Corriger manuellement les paires en revue humaine
+5. Télécharger le JSON annoté
 
 Protocole : `protocole.md`
 
@@ -52,6 +82,8 @@ Protocole : `protocole.md`
 ```
 GET /api/status
 ```
+
+Retourne la checklist, `ready_for_run_model`, espace disque recommandé, état Ollama, etc.
 
 ## Documentation complète
 

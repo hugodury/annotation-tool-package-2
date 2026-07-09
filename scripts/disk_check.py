@@ -34,49 +34,75 @@ def ml_models_present(root: Path) -> bool:
     return all((root / rel).is_file() for rel in required)
 
 
+def full_install_disk_gb(
+    root: Path,
+    cfg: dict | None = None,
+    *,
+    ram_gb_val: float = 0,
+) -> tuple[float, dict[str, float]]:
+    """Espace libre recommande pour une installation complete depuis zero (informatif)."""
+    cfg = cfg or {}
+    manifest = load_manifest(root)
+    breakdown: dict[str, float] = {}
+
+    archive_gb = manifest.get("archive", {}).get("required_free_gb")
+    if archive_gb is None:
+        size = manifest.get("archive", {}).get("size_bytes", 1_500_000_000)
+        archive_gb = round(size / (1024**3) * 2 + 0.5, 1)
+    breakdown["modeles_ml"] = float(archive_gb)
+    breakdown["venv_et_dependances"] = VENV_AND_DEPS_GB
+
+    llm_profile = None
+    profiles = cfg.get("llm_profiles", [])
+    if profiles:
+        ordered = sorted(profiles, key=lambda p: p.get("priority", 99))
+        mem = ram_gb_val if ram_gb_val > 0 else 8.0
+        for p in ordered:
+            if mem >= p.get("min_ram_gb", 0) - 1:
+                llm_profile = p
+                break
+        if llm_profile is None:
+            llm_profile = ordered[-1]
+    if llm_profile:
+        breakdown["llm_ollama"] = float(llm_profile.get("min_disk_gb", 6))
+    else:
+        breakdown["llm_ollama"] = 6.0
+
+    breakdown["marge_securite"] = SAFETY_MARGIN_GB
+    return round(sum(breakdown.values()), 1), breakdown
+
+
 def estimate_disk_need(
     root: Path,
     cfg: dict | None = None,
     *,
-    models_ok: bool | None = None,
-    llm_profile: dict | None = None,
+    install_complete: bool = False,
     ram_gb_val: float = 0,
 ) -> dict[str, Any]:
     cfg = cfg or {}
-    manifest = load_manifest(root)
-    models_ok = ml_models_present(root) if models_ok is None else models_ok
-
-    breakdown: dict[str, float] = {}
-    if not models_ok:
-        archive_gb = manifest.get("archive", {}).get("required_free_gb")
-        if archive_gb is None:
-            size = manifest.get("archive", {}).get("size_bytes", 1_500_000_000)
-            archive_gb = round(size / (1024**3) * 2 + 0.5, 1)
-        breakdown["modeles_ml"] = float(archive_gb)
-
-    breakdown["venv_et_dependances"] = VENV_AND_DEPS_GB
-
-    if llm_profile is None and cfg.get("llm_profiles"):
-        profiles = sorted(cfg["llm_profiles"], key=lambda p: p.get("priority", 99))
-        mem = ram_gb_val if ram_gb_val > 0 else 8.0
-        for p in profiles:
-            if mem >= p.get("min_ram_gb", 0) - 1:
-                llm_profile = p
-                break
-        if llm_profile is None and profiles:
-            llm_profile = profiles[-1]
-    if llm_profile:
-        breakdown["llm_ollama"] = float(llm_profile.get("min_disk_gb", 3))
-
-    breakdown["marge_securite"] = SAFETY_MARGIN_GB
-    total = round(sum(breakdown.values()), 1)
     free = round(disk_free_gb(root), 1)
+    fresh_gb, fresh_breakdown = full_install_disk_gb(root, cfg, ram_gb_val=ram_gb_val)
+
+    if install_complete:
+        critical = free > 0 and free < 0.3
+        return {
+            "disk_free_gb": free,
+            "fresh_install_required_gb": fresh_gb,
+            "fresh_install_breakdown_gb": fresh_breakdown,
+            "disk_required_gb": None,
+            "disk_ok": not critical,
+            "disk_breakdown_gb": {},
+            "install_complete": True,
+        }
 
     return {
         "disk_free_gb": free,
-        "disk_required_gb": total,
-        "disk_ok": free >= total if free > 0 else True,
-        "disk_breakdown_gb": breakdown,
+        "fresh_install_required_gb": fresh_gb,
+        "fresh_install_breakdown_gb": fresh_breakdown,
+        "disk_required_gb": fresh_gb,
+        "disk_ok": free >= fresh_gb if free > 0 else True,
+        "disk_breakdown_gb": fresh_breakdown,
+        "install_complete": False,
     }
 
 

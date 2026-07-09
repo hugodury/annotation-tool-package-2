@@ -114,6 +114,206 @@ def recommended_llm(ram: float, profiles: list[dict]) -> dict | None:
     return ordered[-1] if ordered else None
 
 
+def llm_model_pulled(ollama: dict[str, Any], cfg: dict) -> tuple[bool, str]:
+    active = cfg.get("llm", {}).get("ollama", "") or "qwen2.5:7b-instruct"
+    if not ollama.get("running"):
+        return False, active
+    models = ollama.get("models") or []
+    pulled = any(active in m or active.split(":")[0] in m for m in models)
+    return pulled, active
+
+
+def deps_ok() -> dict[str, tuple[bool, str]]:
+    out: dict[str, tuple[bool, str]] = {}
+    try:
+        import torch
+
+        out["pytorch"] = (True, torch.__version__)
+    except ImportError:
+        out["pytorch"] = (False, "Relancez ./start.sh")
+    try:
+        import sentence_transformers as st
+
+        ver = st.__version__
+        parts = [int(p) for p in ver.split(".")[:2]]
+        ok = parts[0] > 5 or (parts[0] == 5 and parts[1] >= 5)
+        out["sentence_transformers"] = (ok, ver)
+    except ImportError:
+        out["sentence_transformers"] = (False, "Relancez ./start.sh")
+    return out
+
+
+def installation_complete(
+    *,
+    py_ok: bool,
+    pt_ok: bool,
+    st_ok: bool,
+    models_ok: bool,
+    ollama: dict[str, Any],
+    llm_ok: bool,
+) -> bool:
+    return bool(
+        py_ok
+        and pt_ok
+        and st_ok
+        and models_ok
+        and ollama.get("installed")
+        and ollama.get("running")
+        and llm_ok
+    )
+
+
+def build_checklist(
+    *,
+    py_ok: bool,
+    py_ver: str,
+    models_ok: bool,
+    ollama: dict[str, Any],
+    cfg: dict,
+    mem: float,
+    disk_info: dict[str, Any],
+    gpu: dict[str, Any],
+    platform: dict[str, Any],
+    performance: str,
+    performance_label: str,
+    deps: dict[str, tuple[bool, str]],
+) -> list[dict[str, Any]]:
+    llm_ok, llm_tag = llm_model_pulled(ollama, cfg)
+    disk_ok = disk_info.get("disk_ok", True)
+    disk_free = disk_info.get("disk_free_gb")
+    fresh_gb = disk_info.get("fresh_install_required_gb")
+    install_done = disk_info.get("install_complete", False)
+
+    ram_ok: bool | None
+    if mem <= 0:
+        ram_ok = None
+    elif mem >= 10:
+        ram_ok = True
+    else:
+        ram_ok = False
+
+    pt_ok, pt_ver = deps.get("pytorch", (False, "?"))
+    st_ok, st_ver = deps.get("sentence_transformers", (False, "?"))
+
+    perf_ok: bool | None
+    if performance in ("good", "acceptable"):
+        perf_ok = True
+    elif performance == "insufficient":
+        perf_ok = False
+    else:
+        perf_ok = None
+
+    os_label = platform.get("os", "?")
+    arch = platform.get("arch", "?")
+
+    return [
+        {
+            "id": "platform",
+            "label": "Systeme",
+            "ok": True,
+            "required": False,
+            "detail": f"{os_label} {arch}",
+        },
+        {
+            "id": "python",
+            "label": "Python 3.9+",
+            "ok": py_ok,
+            "required": True,
+            "detail": f"v{py_ver}" if py_ok else "Installez Python 3.9+",
+            "action": PYTHON_DOWNLOAD if not py_ok else None,
+        },
+        {
+            "id": "pytorch",
+            "label": "PyTorch",
+            "ok": pt_ok,
+            "required": True,
+            "detail": f"v{pt_ver}" if pt_ok else pt_ver,
+            "action": "./start.sh" if not pt_ok else None,
+        },
+        {
+            "id": "sentence_transformers",
+            "label": "sentence-transformers >= 5.5",
+            "ok": st_ok,
+            "required": True,
+            "detail": f"v{st_ver}" if st_ok else f"v{st_ver} — modeles incompatibles",
+            "action": "pip install 'sentence-transformers>=5.5.1'" if not st_ok else None,
+        },
+        {
+            "id": "ml_models",
+            "label": "Modeles ML (DeBERTa, SBERT, cross-encoder)",
+            "ok": models_ok,
+            "required": True,
+            "detail": "Presents dans models/" if models_ok else "Manquants",
+            "action": "./start.sh" if not models_ok else None,
+        },
+        {
+            "id": "ollama_installed",
+            "label": "Ollama installe",
+            "ok": bool(ollama.get("installed")),
+            "required": True,
+            "detail": "OK" if ollama.get("installed") else "Non installe",
+            "action": OLLAMA_DOWNLOAD if not ollama.get("installed") else None,
+        },
+        {
+            "id": "ollama_running",
+            "label": "Ollama actif (serve)",
+            "ok": bool(ollama.get("running")),
+            "required": True,
+            "detail": "Service en cours" if ollama.get("running") else "ollama serve",
+            "action": "ollama serve" if not ollama.get("running") else None,
+        },
+        {
+            "id": "llm_qwen",
+            "label": f"LLM {llm_tag}",
+            "ok": llm_ok,
+            "required": True,
+            "detail": "Telecharge" if llm_ok else "En cours ou manquant",
+            "action": f"ollama pull {llm_tag}" if not llm_ok else None,
+        },
+        {
+            "id": "ram",
+            "label": "RAM >= 10 Go",
+            "ok": ram_ok,
+            "required": False,
+            "detail": f"{mem:.1f} Go" if mem > 0 else "Non detectee",
+        },
+        {
+            "id": "disk",
+            "label": "Espace disque libre",
+            "ok": True if install_done else (disk_ok if fresh_gb else None),
+            "required": False,
+            "detail": (
+                f"{disk_free} Go libres"
+                if disk_free is not None
+                else ""
+            ),
+            "action": (
+                None
+                if install_done
+                else (
+                    f"~{fresh_gb} Go libres requis pour terminer l'installation"
+                    if fresh_gb and not disk_ok
+                    else None
+                )
+            ),
+        },
+        {
+            "id": "gpu",
+            "label": "GPU (acceleration)",
+            "ok": True if gpu.get("device") != "cpu" else None,
+            "required": False,
+            "detail": gpu.get("label", "CPU"),
+        },
+        {
+            "id": "performance",
+            "label": "Performance estimee",
+            "ok": perf_ok,
+            "required": False,
+            "detail": performance_label,
+        },
+    ]
+
+
 def build_report(root: Path | None = None, cfg: dict | None = None) -> dict[str, Any]:
     root = root or Path.cwd()
     cfg = cfg or {}
@@ -127,16 +327,31 @@ def build_report(root: Path | None = None, cfg: dict | None = None) -> dict[str,
     gpu = gpu_info()
     models_ok = ml_models_ok(root)
     rec_llm = recommended_llm(mem, profiles) if profiles else None
+    llm_ok, _llm_tag = llm_model_pulled(ollama, cfg)
+    deps = deps_ok()
+    pt_ok, _ = deps.get("pytorch", (False, ""))
+    st_ok, _ = deps.get("sentence_transformers", (False, ""))
+    install_done = installation_complete(
+        py_ok=py_ok,
+        pt_ok=pt_ok,
+        st_ok=st_ok,
+        models_ok=models_ok,
+        ollama=ollama,
+        llm_ok=llm_ok,
+    )
 
     disk_info: dict[str, Any] = {}
     try:
         from disk_check import estimate_disk_need
 
         disk_info = estimate_disk_need(
-            root, cfg, models_ok=models_ok, llm_profile=rec_llm, ram_gb_val=mem
+            root,
+            cfg,
+            install_complete=install_done,
+            ram_gb_val=mem,
         )
     except Exception:
-        disk_info = {"disk_free_gb": disk, "disk_required_gb": None, "disk_ok": True}
+        disk_info = {"disk_free_gb": disk, "disk_ok": True, "install_complete": install_done}
 
     errors: list[str] = []
     warnings: list[str] = []
@@ -147,75 +362,67 @@ def build_report(root: Path | None = None, cfg: dict | None = None) -> dict[str,
             f"Python {py_ver} détecté — Python {PYTHON_MIN[0]}.{PYTHON_MIN[1]}+ requis. "
             f"Téléchargement : {PYTHON_DOWNLOAD}"
         )
-    elif not py_recommended:
+    elif not py_recommended and not install_done:
         warnings.append(
             f"Python {py_ver} fonctionne, mais Python 3.12+ est recommandé pour de meilleures performances."
         )
 
-    if not ollama["installed"]:
-        warnings.append(
-            "Ollama n'est pas installé — la partie LLM de la cascade échouera. "
-            f"Téléchargement : {OLLAMA_DOWNLOAD}"
-        )
-    elif not ollama["running"]:
-        warnings.append(
-            "Ollama est installé mais le service ne répond pas encore. "
-            "Démarrage automatique en cours (ollama serve)…"
-        )
-
-    if not models_ok:
-        warnings.append(
-            "Modèles ML manquants dans models/ (DeBERTa / SBERT / cross-encoder). "
-            "Relancez ./start.sh pour les télécharger."
-        )
-
-    if mem > 0 and mem < 6:
-        warnings.append(
-            f"RAM faible (~{mem:.1f} Go). L'annotation sera très lente ou pourra échouer."
-        )
-    elif 0 < mem < 10:
-        warnings.append(
-            f"RAM limitée (~{mem:.1f} Go). Qwen 7B peut échouer ou être très lent."
-        )
-
-    if disk_info.get("disk_required_gb") and not disk_info.get("disk_ok"):
-        warnings.append(
-            f"Espace disque limité : {disk_info['disk_free_gb']} Go libres, "
-            f"~{disk_info['disk_required_gb']} Go recommandés pour une installation complète."
-        )
-    elif disk > 0 and disk < 5:
-        warnings.append(
-            f"Espace disque faible (~{disk:.1f} Go libres). "
-            "Prévoyez ~8–12 Go pour une installation complète."
-        )
-
-    if gpu["device"] == "cpu":
-        warnings.append(
-            "Pas de GPU détecté. DeBERTa et le LLM tourneront sur CPU — "
-            "l'annotation automatique sera nettement plus lente."
-        )
-
-    if ollama["installed"] and ollama["running"] and rec_llm:
-        active = cfg.get("llm", {}).get("ollama", rec_llm["ollama"])
-        if not any(active in m or active.split(":")[0] in m for m in ollama["models"]):
+    if not install_done:
+        if not ollama["installed"]:
+            warnings.append(
+                "Ollama n'est pas installé — la partie LLM de la cascade échouera. "
+                f"Téléchargement : {OLLAMA_DOWNLOAD}"
+            )
+        elif not ollama["running"]:
+            warnings.append(
+                "Ollama est installé mais le service ne répond pas encore. "
+                "Démarrage automatique en cours (ollama serve)…"
+            )
+        if not models_ok:
+            warnings.append(
+                "Modèles ML manquants dans models/ (DeBERTa / SBERT / cross-encoder). "
+                "Relancez ./start.sh pour les télécharger."
+            )
+        if ollama["installed"] and ollama["running"] and rec_llm and not llm_ok:
+            active = cfg.get("llm", {}).get("ollama", rec_llm["ollama"])
             warnings.append(
                 f"LLM « {active} » pas encore téléchargé — "
                 "téléchargement automatique en cours (plusieurs minutes)."
             )
-        notes.append(f"LLM recommandé pour cette machine : {rec_llm['label']} ({rec_llm['ollama']})")
 
-    if mem >= 10 and gpu["device"] != "cpu":
-        notes.append("Configuration confortable pour DeBERTa + Qwen 7B.")
-    elif mem >= 6:
-        notes.append("Configuration limitée — Qwen 7B sera lent sur cette machine.")
+        if mem > 0 and mem < 6:
+            warnings.append(
+                f"RAM faible (~{mem:.1f} Go). L'annotation sera très lente ou pourra échouer."
+            )
+        elif 0 < mem < 10:
+            warnings.append(
+                f"RAM limitée (~{mem:.1f} Go). Qwen 7B peut échouer ou être très lent."
+            )
 
-    notes.append(
-        "Vous pouvez toujours cliquer Run Model — une machine limitée sera simplement plus lente."
-    )
+        if (
+            disk_info.get("fresh_install_required_gb")
+            and not disk_info.get("disk_ok")
+        ):
+            warnings.append(
+                f"Espace disque insuffisant pour terminer l'installation : "
+                f"{disk_info['disk_free_gb']} Go libres, "
+                f"~{disk_info['fresh_install_required_gb']} Go recommandes."
+            )
 
-    if disk_info.get("disk_breakdown_gb"):
-        parts = ", ".join(f"{k} ~{v} Go" for k, v in disk_info["disk_breakdown_gb"].items())
-        notes.append(f"Espace estimé nécessaire : {disk_info['disk_required_gb']} Go ({parts}).")
+        if gpu["device"] == "cpu":
+            warnings.append(
+                "Pas de GPU détecté. DeBERTa et le LLM tourneront sur CPU — "
+                "l'annotation automatique sera nettement plus lente."
+            )
+
+        if rec_llm:
+            notes.append(f"LLM recommandé pour cette machine : {rec_llm['label']} ({rec_llm['ollama']})")
+
+        notes.append("Completez la checklist obligatoire avant Run Model.")
+    elif disk_info.get("disk_free_gb", 0) > 0 and disk_info.get("disk_free_gb", 0) < 0.3:
+        warnings.append(
+            f"Espace disque critique : {disk_info['disk_free_gb']} Go libres."
+        )
 
     perf_labels = {
         "good": "Bonne — annotation rapide attendue",
@@ -239,6 +446,23 @@ def build_report(root: Path | None = None, cfg: dict | None = None) -> dict[str,
     else:
         performance = "good"
 
+    checklist = build_checklist(
+        py_ok=py_ok,
+        py_ver=py_ver,
+        models_ok=models_ok,
+        ollama=ollama,
+        cfg=cfg,
+        mem=mem,
+        disk_info=disk_info,
+        gpu=gpu,
+        platform={"os": platform.system(), "arch": platform.machine()},
+        performance=performance,
+        performance_label=perf_labels.get(performance, performance),
+        deps=deps,
+    )
+    ready_for_run_model = all(item["ok"] is True for item in checklist if item["required"])
+    missing_required = [item["label"] for item in checklist if item["required"] and item["ok"] is not True]
+
     return {
         "platform": {
             "os": platform.system(),
@@ -249,8 +473,10 @@ def build_report(root: Path | None = None, cfg: dict | None = None) -> dict[str,
             "ram_gb": round(mem, 1) if mem else None,
             "disk_free_gb": round(disk, 1) if disk else None,
             "disk_required_gb": disk_info.get("disk_required_gb"),
+            "fresh_install_disk_gb": disk_info.get("fresh_install_required_gb"),
             "disk_ok": disk_info.get("disk_ok", True),
             "disk_breakdown_gb": disk_info.get("disk_breakdown_gb"),
+            "install_complete": install_done,
             "gpu": gpu,
         },
         "ollama": ollama,
@@ -262,7 +488,11 @@ def build_report(root: Path | None = None, cfg: dict | None = None) -> dict[str,
         "can_manual_annotate": can_manual,
         "can_auto_annotate_deberta": can_auto_deberta,
         "can_auto_annotate_full": can_auto_full,
-        "run_model_allowed": True,
+        "run_model_allowed": ready_for_run_model,
+        "ready_for_run_model": ready_for_run_model,
+        "install_complete": install_done,
+        "missing_required": missing_required,
+        "checklist": checklist,
         "errors": errors,
         "warnings": warnings,
         "notes": notes,

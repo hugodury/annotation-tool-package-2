@@ -3,6 +3,7 @@ from flask_sqlalchemy import SQLAlchemy
 import json
 import os
 import sys
+import time
 from datetime import datetime
 import math
 import numpy as np
@@ -69,6 +70,46 @@ db = SQLAlchemy(app)
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs('static', exist_ok=True)
 
+
+class AnnotationFile(db.Model):
+    """Fichier JSON charge dans l'outil."""
+    __tablename__ = 'annotation_files'
+    id = db.Column(db.Integer, primary_key=True)
+    filename = db.Column(db.String(255), unique=True, nullable=False)
+    uploaded_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ReferenceAnnotation(db.Model):
+    """Etat d'annotation d'une reference (news_id) dans un fichier donne."""
+    __tablename__ = 'reference_annotations'
+    id = db.Column(db.Integer, primary_key=True)
+    filename = db.Column(db.String(255), nullable=False, index=True)
+    news_id = db.Column(db.String(50), nullable=False, index=True)
+    status = db.Column(db.String(20), nullable=False, default='pending')  # pending, partial, complete
+    source = db.Column(db.String(20), default='import')  # manual, auto, import
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    __table_args__ = (db.UniqueConstraint('filename', 'news_id', name='uq_ref_file_news'),)
+
+
+class TargetAnnotation(db.Model):
+    """Annotation detaillee de chaque cible dans une reference."""
+    __tablename__ = 'target_annotations'
+    id = db.Column(db.Integer, primary_key=True)
+    filename = db.Column(db.String(255), nullable=False, index=True)
+    news_id = db.Column(db.String(50), nullable=False, index=True)
+    target_index = db.Column(db.Integer, nullable=False)
+    related = db.Column(db.String(50))
+    similarity_annotation = db.Column(db.Float)
+    cascade_route = db.Column(db.String(50))
+    source = db.Column(db.String(20), default='import')
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    __table_args__ = (
+        db.UniqueConstraint('filename', 'news_id', 'target_index', name='uq_target_file_news_idx'),
+    )
+
+
+# Ancien modele conserve pour migration depuis annotations.db existantes.
 class ProcessedNews(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     news_id = db.Column(db.String(50), unique=True, nullable=False)
@@ -77,8 +118,127 @@ class ProcessedNews(db.Model):
     def __init__(self, news_id):
         self.news_id = news_id
 
-with app.app_context():
+
+def _target_is_annotated(target: dict) -> bool:
+    rel = target.get('related')
+    if rel is None or str(rel).strip() == '':
+        return False
+    if str(rel).strip().lower() == 'dismissed':
+        return True
+    sim = target.get('similarity_annotation')
+    if sim is None or sim == '':
+        return False
+    try:
+        float(sim)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+def reference_status_from_item(item: dict) -> str:
+    targets = item.get('database') or []
+    if not targets:
+        return 'pending'
+    annotated = sum(1 for t in targets if _target_is_annotated(t))
+    if annotated == 0:
+        return 'pending'
+    if annotated == len(targets):
+        return 'complete'
+    return 'partial'
+
+
+def _upsert_annotation_file(filename: str) -> None:
+    record = AnnotationFile.query.filter_by(filename=filename).first()
+    if record is None:
+        db.session.add(AnnotationFile(filename=filename))
+    else:
+        record.updated_at = datetime.utcnow()
+
+
+def sync_reference_to_db(filename: str, item: dict, source: str = 'import') -> str:
+    news_id = str(item.get('news_id', ''))
+    status = reference_status_from_item(item)
+    record = ReferenceAnnotation.query.filter_by(filename=filename, news_id=news_id).first()
+    if record is None:
+        record = ReferenceAnnotation(filename=filename, news_id=news_id)
+        db.session.add(record)
+    record.status = status
+    record.source = source
+    record.updated_at = datetime.utcnow()
+
+    for idx, target in enumerate(item.get('database') or []):
+        if not _target_is_annotated(target):
+            continue
+        ta = TargetAnnotation.query.filter_by(
+            filename=filename, news_id=news_id, target_index=idx
+        ).first()
+        if ta is None:
+            ta = TargetAnnotation(filename=filename, news_id=news_id, target_index=idx)
+            db.session.add(ta)
+        ta.related = str(target.get('related', ''))
+        sim = target.get('similarity_annotation')
+        ta.similarity_annotation = float(sim) if sim is not None and sim != '' else None
+        ta.cascade_route = target.get('cascade_route')
+        ta.source = source
+        ta.updated_at = datetime.utcnow()
+    return status
+
+
+def sync_file_annotations(filename: str, data: list, source: str = 'import') -> None:
+    _upsert_annotation_file(filename)
+    for item in data:
+        sync_reference_to_db(filename, item, source=source)
+
+
+def enrich_data_with_status(filename: str, data: list) -> list:
+    for item in data:
+        news_id = str(item.get('news_id', ''))
+        content_status = reference_status_from_item(item)
+        record = ReferenceAnnotation.query.filter_by(filename=filename, news_id=news_id).first()
+        db_status = record.status if record else 'pending'
+        if 'complete' in (content_status, db_status):
+            final_status = 'complete'
+        elif 'partial' in (content_status, db_status):
+            final_status = 'partial'
+        else:
+            final_status = 'pending'
+        item['annotation_status'] = final_status
+        item['is_processed'] = final_status == 'complete'
+    return data
+
+
+def get_processed_ids_for_file(filename: str) -> set[str]:
+    rows = ReferenceAnnotation.query.filter_by(filename=filename, status='complete').all()
+    return {row.news_id for row in rows}
+
+
+def _migrate_legacy_db() -> None:
+    from sqlalchemy import inspect, text
+
     db.create_all()
+    inspector = inspect(db.engine)
+    if 'processed_news' not in inspector.get_table_names():
+        return
+    if ReferenceAnnotation.query.count() > 0:
+        return
+    try:
+        legacy_rows = db.session.execute(text('SELECT news_id FROM processed_news')).fetchall()
+        for (news_id,) in legacy_rows:
+            db.session.add(
+                ReferenceAnnotation(
+                    filename='_legacy_',
+                    news_id=str(news_id),
+                    status='complete',
+                    source='legacy',
+                )
+            )
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+
+
+with app.app_context():
+    _migrate_legacy_db()
 
 
 def _load_cascade_config() -> dict:
@@ -145,11 +305,10 @@ def upload_file():
             # If the file is a dict, wrap it in a list for uniformity
             if isinstance(data, dict):
                 data = [data]
-            # Get processed ids
-            processed_ids = set(row.news_id for row in ProcessedNews.query.all())
-            # Mark processed state in the data
-            for item in data:
-                item['is_processed'] = str(item.get('news_id')) in processed_ids
+            sync_file_annotations(file.filename, data, source='import')
+            db.session.commit()
+            data = enrich_data_with_status(file.filename, data)
+            processed_ids = get_processed_ids_for_file(file.filename)
             return jsonify({'data': data, 'processed_ids': list(processed_ids), 'filename': file.filename})
         except Exception as e:
             return jsonify({'error': f'Invalid JSON file: {str(e)}'}), 400
@@ -172,11 +331,12 @@ def resume_session():
         data = json.load(f)
     if isinstance(data, dict):
         data = [data]
-        
-    processed_ids = set(row.news_id for row in ProcessedNews.query.all())
-    for item in data:
-        item['is_processed'] = str(item.get('news_id')) in processed_ids
-        
+
+    sync_file_annotations(latest_file, data, source='import')
+    db.session.commit()
+    data = enrich_data_with_status(latest_file, data)
+    processed_ids = get_processed_ids_for_file(latest_file)
+
     return jsonify({'data': data, 'processed_ids': list(processed_ids), 'filename': latest_file})
 
 @app.route('/download', methods=['GET'])
@@ -226,7 +386,7 @@ def save_annotation():
         data = [data]
         
     # Update the annotation for the correct news_id
-    updated = False
+    updated_item = None
     for item in data:
         if str(item.get('news_id')) == news_id:
             # Write similarity_annotation and related into each news in database
@@ -235,26 +395,34 @@ def save_annotation():
                 for i, ann in enumerate(annotation):
                     db_list[i]['similarity_annotation'] = ann.get('similarity')
                     db_list[i]['related'] = ann.get('relation')
-            updated = True
+            updated_item = item
             break
-    if not updated:
+    if updated_item is None:
         return jsonify({'error': 'News ID not found in file'}), 400
     # Save back to file
     with open(file_path, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=4)
-    # Mark as processed in DB
-    if not ProcessedNews.query.filter_by(news_id=news_id).first():
-        db.session.add(ProcessedNews(news_id=news_id))
-        db.session.commit()
-    return jsonify({'message': 'Annotation saved successfully'})
+
+    sync_reference_to_db(original_filename, updated_item, source='manual')
+    db.session.commit()
+    status = reference_status_from_item(updated_item)
+    return jsonify({
+        'message': 'Annotation saved successfully',
+        'annotation_status': status,
+        'is_processed': status == 'complete',
+    })
 
 @app.route('/clear_database', methods=['POST'])
 def clear_database():
     try:
+        TargetAnnotation.query.delete()
+        ReferenceAnnotation.query.delete()
+        AnnotationFile.query.delete()
         ProcessedNews.query.delete()
         db.session.commit()
         return jsonify({'message': 'Database cleared successfully'})
     except Exception as e:
+        db.session.rollback()
         return jsonify({'error': str(e)}), 500
 
 @app.route('/auto_annotate', methods=['POST'])
@@ -300,8 +468,13 @@ def auto_annotate():
             )
         }), 503
     report = build_report(BASE_DIR, cfg)
-    # Run Model toujours autorisé — les avertissements sont informatifs seulement.
-        
+    if not report.get("ready_for_run_model"):
+        missing = report.get("missing_required") or []
+        msg = "Configuration incomplete — Run Model indisponible."
+        if missing:
+            msg += " Manque : " + ", ".join(missing)
+        return jsonify({"error": msg, "missing_required": missing}), 503
+
     try:
         engine = get_cascade_engine()
         sbert = get_sbert_model()
@@ -311,7 +484,7 @@ def auto_annotate():
     targets_annotated_count = 0
     total_targets_evaluated = 0
     references_fully_annotated_count = 0
-    processed_ids = set(row.news_id for row in ProcessedNews.query.all())
+    processed_ids = get_processed_ids_for_file(original_filename)
     
     routing_stats = {
         "deberta_auto": 0,
@@ -320,6 +493,27 @@ def auto_annotate():
         "rejected": 0,
         "human": 0
     }
+
+    run_cfg = cfg.get("run_model", {})
+    no_annotation_timeout = int(run_cfg.get("no_annotation_timeout", 360))
+    batch_start = time.monotonic()
+
+    def _save_partial_and_respond(error_msg: str, status_code: int = 504):
+        db.session.commit()
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4)
+        enriched = enrich_data_with_status(original_filename, data)
+        return jsonify({
+            'error': error_msg,
+            'message': (
+                f"Run Model interrompu — {targets_annotated_count} cible(s) pre-remplie(s) "
+                f"avant arret. Progression partielle sauvegardee."
+            ),
+            'annotated_count': references_fully_annotated_count,
+            'data': enriched,
+            'processed_ids': list(get_processed_ids_for_file(original_filename)),
+            'routing_stats': routing_stats,
+        }), status_code
     
     for idx in range(start_index, end_index + 1):
         item = data[idx]
@@ -344,6 +538,15 @@ def auto_annotate():
         
         all_above_threshold = True
         for i, target in enumerate(targets):
+            if (
+                targets_annotated_count == 0
+                and time.monotonic() - batch_start > no_annotation_timeout
+            ):
+                return _save_partial_and_respond(
+                    f"Aucune annotation automatique apres {no_annotation_timeout}s. "
+                    "Verifiez Ollama, la RAM, ou reduisez la plage d'index."
+                )
+
             target_news = target.get('news', '')
             target_topic = target.get('topic', 'N/A') or 'N/A'
             target_date_raw = target.get('metadata', {}).get('date')
@@ -397,18 +600,19 @@ def auto_annotate():
                 routing_stats[route_name] = routing_stats.get(route_name, 0) + 1
         
         if all_above_threshold:
-            db.session.add(ProcessedNews(news_id=news_id))
             references_fully_annotated_count += 1
-            processed_ids.add(news_id)
-            
+
+        sync_reference_to_db(original_filename, item, source='auto')
+        processed_ids = get_processed_ids_for_file(original_filename)
+
     db.session.commit()
     
     with open(file_path, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=4)
         
     # Return updated full data
-    for item in data:
-        item['is_processed'] = str(item.get('news_id')) in processed_ids
+    data = enrich_data_with_status(original_filename, data)
+    processed_ids = get_processed_ids_for_file(original_filename)
         
     msg = (
         f"Auto-annotation complete. Pre-filled {targets_annotated_count}/{total_targets_evaluated} targets. "

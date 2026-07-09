@@ -2,7 +2,10 @@
   "tau_deberta_auto": 0.95,
   "tau_human_floor": 0.75,
   "tau_disagreement_reject": 0.85,
-  "llm_target_classes": ["supporting", "undetermined"],
+  "llm_target_classes": [
+    "supporting",
+    "undetermined"
+  ],
   "deberta_model_path": "models/fine_tuned_deberta_base_expanded",
   "score_max": 0.8,
   "score_not_related_cutoff": 0.2,
@@ -13,7 +16,15 @@
     "undetermined": 0.55
   },
   "ollama_host": "http://127.0.0.1:11434",
-  "inference": {"temperature": 0, "num_predict": 512, "timeout": 1800, "keep_alive": "30m"},
+  "inference": {
+    "temperature": 0,
+    "num_predict": 512,
+    "timeout": 300,
+    "keep_alive": "30m"
+  },
+  "run_model": {
+    "no_annotation_timeout": 360
+  },
   "llm_auto_select": true,
   "llm_profiles": [
     {

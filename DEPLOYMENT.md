@@ -14,7 +14,7 @@ Avec ce guide + une **GitHub Release** des modèles, l'auto-annotation DeBERTa /
 | Python 3.9+ | ✓ | ✓ | ✓ |
 | Ollama | [ollama.com](https://ollama.com/) | idem | idem |
 | RAM | 10 Go recommandés (Qwen 7B) | idem | idem |
-| Disque | ~12–15 Go (app + modèles ML + LLM) | idem | idem |
+| Disque | ~13 Go libres au 1er lancement ; ~8 Go une fois installé | idem | idem |
 
 ---
 

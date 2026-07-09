@@ -110,7 +110,7 @@ def ollama_generate(
     prompt: str,
     temperature: float,
     num_predict: int,
-    timeout: int = 1800,
+    timeout: int = 300,
     keep_alive: str = "30m",
 ) -> str:
     payload = json.dumps(
@@ -179,7 +179,7 @@ class CascadeEngine:
                 prompt,
                 inf["temperature"],
                 inf["num_predict"],
-                timeout=int(inf.get("timeout", 1800)),
+                timeout=int(inf.get("timeout", 300)),
                 keep_alive=str(inf.get("keep_alive", "30m")),
             )
         except (urllib.error.URLError, TimeoutError, OSError) as e:

@@ -318,6 +318,67 @@
         .system-banner ul { margin: 0.5rem 0 0 1.2rem; padding: 0; }
         .system-banner li { margin-bottom: 0.25rem; }
         .system-banner-title { font-weight: 700; display: flex; align-items: center; gap: 0.5rem; }
+
+        .config-checklist-panel {
+            background: #fff;
+            border: 1px solid #dee2e6;
+            border-radius: 10px;
+            padding: 1rem 1.1rem;
+        }
+        .config-checklist-panel.state-ok { border-left: 4px solid #198754; }
+        .config-checklist-panel.state-warn { border-left: 4px solid #d39e00; }
+        .config-checklist-panel.state-fail { border-left: 4px solid #dc3545; }
+        .config-checklist-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+            margin-bottom: 0.75rem;
+        }
+        .config-checklist {
+            list-style: none;
+            margin: 0;
+            padding: 0;
+        }
+        .config-checklist li {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.5rem;
+            padding: 0.35rem 0;
+            border-bottom: 1px solid #f0f0f0;
+            font-size: 0.92rem;
+        }
+        .config-checklist li:last-child { border-bottom: none; }
+        .config-checklist .check-icon {
+            width: 1.25rem;
+            font-weight: 700;
+            flex-shrink: 0;
+        }
+        .config-checklist .check-label { flex: 1; }
+        .config-checklist .check-detail {
+            color: #6c757d;
+            font-size: 0.82rem;
+            text-align: right;
+            max-width: 45%;
+        }
+        .config-checklist li.check-ok .check-icon { color: var(--success-color); }
+        .config-checklist li.check-fail .check-icon { color: var(--accent-color); }
+        .config-checklist li.check-warn .check-icon { color: #d39e00; }
+        .config-ready-badge.ok { background: #198754; }
+        .config-ready-badge.warn { background: #d39e00; }
+        .config-ready-badge.fail { background: #dc3545; }
+        .config-missing-actions {
+            margin-top: 0.75rem;
+            padding: 0.65rem 0.75rem;
+            background: #fff5f5;
+            border-radius: 6px;
+            font-size: 0.85rem;
+        }
+        .config-missing-actions ul {
+            margin: 0.35rem 0 0 1.1rem;
+            padding: 0;
+        }
+        .config-missing-actions li { margin-bottom: 0.2rem; }
     </style>
 </head>
 <body>
@@ -335,14 +396,21 @@
             <h1>News Annotation Tool</h1>
         </div>
 
-        <div id="systemHealthBanner" class="system-banner ok" style="display:none;">
-            <div class="system-banner-title"><i class="fas fa-heartbeat"></i> <span id="systemBannerTitle">System check</span></div>
-            <ul id="systemBannerList"></ul>
-        </div>
-        
         <div class="row mb-4">
             <div class="col-md-5">
                 <div class="upload-section h-100">
+                    <div id="configChecklistPanel" class="config-checklist-panel mb-3">
+                        <div class="config-checklist-header">
+                            <h5 class="mb-0"><i class="fas fa-clipboard-check me-1"></i> Configuration</h5>
+                            <span id="configReadyBadge" class="badge config-ready-badge warn">Verification...</span>
+                        </div>
+                        <ul id="configChecklist" class="config-checklist">
+                            <li class="check-warn"><span class="check-icon">…</span><span class="check-label">Chargement de la configuration</span></li>
+                        </ul>
+                        <small id="configChecklistHint" class="text-muted d-block mt-2"></small>
+                        <small id="configInstallNote" class="text-muted d-block mt-1"></small>
+                        <div id="configMissingActions" class="config-missing-actions" style="display:none;"></div>
+                    </div>
                     <h5 class="mb-3">1. Upload & Manage</h5>
                     <form id="uploadForm" class="mb-3">
                         <div class="input-group">
@@ -363,9 +431,9 @@
                     <div class="d-flex align-items-center gap-2 mb-2">
                         <input type="number" id="autoStart" class="form-control form-control-sm" placeholder="Start Index" min="0">
                         <input type="number" id="autoEnd" class="form-control form-control-sm" placeholder="End Index" min="0">
-                        <button id="runAutoAnnotate" class="btn btn-primary btn-sm" style="white-space: nowrap;"><i class="fas fa-robot me-1"></i>Run Model</button>
+                        <button id="runAutoAnnotate" class="btn btn-primary btn-sm" style="white-space: nowrap;" disabled title="Verification de la configuration…"><i class="fas fa-robot me-1"></i>Run Model</button>
                     </div>
-                    <small class="text-muted">The model will skip already processed items and only save if all targets for a reference meet the threshold.</small>
+                    <small class="text-muted">Disponible lorsque tous les prerequis obligatoires de la checklist sont valides.</small>
                     <div id="autoAnnotateStatus" class="mt-2 fw-bold"></div>
                 </div>
             </div>
@@ -407,90 +475,139 @@
         let currentIndex = 0;
         let systemReport = null;
 
-        async function loadSystemHealth() {
-            const banner = document.getElementById('systemHealthBanner');
-            const title = document.getElementById('systemBannerTitle');
-            const list = document.getElementById('systemBannerList');
+        function updateRunModelButton(report) {
             const runBtn = document.getElementById('runAutoAnnotate');
-            const perfLabels = {
-                good: 'Performance : bonne',
-                acceptable: 'Performance : correcte (Qwen 7B lent)',
-                slow: 'Performance : lente (CPU)',
-                insufficient: 'Performance : insuffisante'
-            };
+            if (!runBtn) return;
+            const ollamaEnsure = report?.ollama_ensure || {};
+            const ready = report?.ready_for_run_model === true;
+            const preparing = ollamaEnsure.status === 'running';
+            const canRun = ready && !preparing;
+            runBtn.disabled = !canRun;
+            if (!canRun) {
+                if (preparing) {
+                    runBtn.title = 'Preparation Ollama / LLM en cours…';
+                } else if (report?.missing_required?.length) {
+                    runBtn.title = 'Manque : ' + report.missing_required.join(', ');
+                } else {
+                    runBtn.title = 'Configuration incomplete — consultez la checklist.';
+                }
+            } else {
+                runBtn.title = '';
+            }
+        }
+
+        function renderConfigChecklist(report) {
+            const panel = document.getElementById('configChecklistPanel');
+            const list = document.getElementById('configChecklist');
+            const badge = document.getElementById('configReadyBadge');
+            const hint = document.getElementById('configChecklistHint');
+            const missingBox = document.getElementById('configMissingActions');
+            const installNote = document.getElementById('configInstallNote');
+            const items = report.checklist || [];
+            const ollamaEnsure = report.ollama_ensure || {};
+            const hw = report.hardware || {};
+            const freshGb = hw.fresh_install_disk_gb;
+            const requiredOk = items.filter(i => i.required).every(i => i.ok === true);
+            const installDone = report.install_complete === true || requiredOk;
+
+            if (freshGb) {
+                installNote.textContent =
+                    `Installation complète (1er lancement) : ~${freshGb} Go libres recommandés sur le disque.`;
+            } else {
+                installNote.textContent = '';
+            }
+
+            if (!items.length) {
+                panel.className = 'config-checklist-panel mb-3 state-warn';
+                list.innerHTML = '<li class="check-warn"><span class="check-icon">!</span><span class="check-label">Checklist indisponible — rechargez la page</span></li>';
+                missingBox.style.display = 'none';
+                return;
+            }
+
+            list.innerHTML = items.map(item => {
+                let ok = item.ok;
+                if (installDone && item.id === 'disk') {
+                    ok = true;
+                }
+                let cls = 'check-warn';
+                let icon = '○';
+                if (ok === true) {
+                    cls = 'check-ok';
+                    icon = '✓';
+                } else if (ok === false) {
+                    cls = item.required ? 'check-fail' : 'check-warn';
+                    icon = item.required ? '✗' : '!';
+                }
+                const req = item.required ? '' : ' <span class="text-muted">(recommande)</span>';
+                let detail = item.detail || '';
+                if (installDone && item.id === 'disk' && hw.disk_free_gb != null) {
+                    detail = `${hw.disk_free_gb} Go libres`;
+                }
+                return `<li class="${cls}">
+                    <span class="check-icon">${icon}</span>
+                    <span class="check-label">${item.label}${req}</span>
+                    <span class="check-detail">${detail}</span>
+                </li>`;
+            }).join('');
+
+            const missing = items.filter(i => i.required && i.ok !== true);
+
+            if (ollamaEnsure.status === 'running') {
+                panel.className = 'config-checklist-panel mb-3 state-warn';
+                badge.className = 'badge config-ready-badge warn';
+                badge.textContent = 'Preparation en cours…';
+                hint.textContent = ollamaEnsure.message || 'Demarrage Ollama et telechargement du LLM.';
+            } else if (installDone && report.ready_for_run_model) {
+                panel.className = 'config-checklist-panel mb-3 state-ok';
+                badge.className = 'badge config-ready-badge ok';
+                badge.textContent = 'Tout installe';
+                hint.textContent = 'Run Model disponible.';
+            } else if (report.ready_for_run_model) {
+                panel.className = 'config-checklist-panel mb-3 state-warn';
+                badge.className = 'badge config-ready-badge warn';
+                badge.textContent = 'Pret (avec reserves)';
+                const optionalIssues = items
+                    .filter(i => !i.required && i.ok === false)
+                    .map(i => i.label);
+                hint.textContent = optionalIssues.length
+                    ? 'Run Model possible — ' + optionalIssues.join(', ')
+                    : 'Run Model possible.';
+            } else {
+                panel.className = 'config-checklist-panel mb-3 state-fail';
+                badge.className = 'badge config-ready-badge fail';
+                badge.textContent = `${missing.length} manquant(s)`;
+                const labels = report.missing_required && report.missing_required.length
+                    ? report.missing_required
+                    : missing.map(m => m.label);
+                hint.textContent = 'Manque : ' + labels.join(', ');
+            }
+
+            const actions = missing
+                .filter(m => m.action)
+                .map(m => `<li><strong>${m.label}</strong> : ${m.action}</li>`);
+            if (!installDone) {
+                items.filter(i => !i.required && i.ok === false && i.action).forEach(w => {
+                    actions.push(`<li><strong>${w.label}</strong> : ${w.action}</li>`);
+                });
+            }
+            if (actions.length) {
+                missingBox.innerHTML = '<strong>A faire :</strong><ul>' + actions.join('') + '</ul>';
+                missingBox.style.display = 'block';
+            } else {
+                missingBox.style.display = 'none';
+            }
+            updateRunModelButton(report);
+        }
+
+        async function loadSystemHealth() {
+            const runBtn = document.getElementById('runAutoAnnotate');
             try {
                 const resp = await fetch('/api/status');
                 systemReport = await resp.json();
-                const hw = systemReport.hardware || {};
-                const plat = systemReport.platform || {};
-                const items = [];
-                const ollamaEnsure = systemReport.ollama_ensure || {};
-
-                if (ollamaEnsure.status === 'running') {
-                    banner.className = 'system-banner warn';
-                    title.textContent = 'Préparation Ollama et LLM en cours…';
-                    items.push(`⏳ ${ollamaEnsure.message || 'Démarrage automatique d\'Ollama et téléchargement du LLM'}`);
-                } else if (systemReport.errors && systemReport.errors.length) {
-                    banner.className = 'system-banner error';
-                    title.textContent = 'Problèmes détectés — Run Model reste disponible';
-                    systemReport.errors.forEach(e => items.push(`✗ ${e}`));
-                } else if (systemReport.warnings && systemReport.warnings.length) {
-                    banner.className = 'system-banner warn';
-                    title.textContent = 'Configuration limitée — Run Model possible (peut être lent)';
-                    systemReport.warnings.forEach(w => items.push(`⚠ ${w}`));
-                } else {
-                    banner.className = 'system-banner ok';
-                    title.textContent = 'Configuration compatible — Run Model prêt';
-                }
-                runBtn.disabled = false;
-
-                if (plat.os) items.push(`Système : ${plat.os} (${plat.arch || '?'})`);
-                if (plat.python) items.push(`Python : ${plat.python}`);
-                if (hw.ram_gb) items.push(`RAM : ${hw.ram_gb} Go`);
-                if (hw.disk_free_gb != null) {
-                    let diskLine = `Disque libre : ${hw.disk_free_gb} Go`;
-                    if (hw.disk_required_gb) diskLine += ` / ~${hw.disk_required_gb} Go requis`;
-                    if (hw.disk_ok === false) diskLine += ' — insuffisant';
-                    items.push(diskLine);
-                }
-                if (hw.gpu && hw.gpu.label) items.push(`Accélération : ${hw.gpu.label}`);
-                if (systemReport.ollama) {
-                    const o = systemReport.ollama;
-                    let ollamaLine = `Ollama : ${o.installed ? 'installé' : 'absent'} / ${o.running ? 'actif' : 'inactif'}`;
-                    if (o.installed && o.models && o.models.length) {
-                        ollamaLine += ` (${o.models.length} modèle(s))`;
-                    }
-                    items.push(ollamaLine);
-                }
-                if (systemReport.ml_models === false) items.push('Modèles ML : manquants — relancez ./start.sh');
-                else if (systemReport.ml_models) items.push('Modèles ML (DeBERTa, SBERT) : OK');
-                if (systemReport.active_llm && systemReport.active_llm.label) {
-                    items.push(`LLM actif : ${systemReport.active_llm.label}`);
-                } else if (systemReport.recommended_llm) {
-                    items.push(`LLM recommandé : ${systemReport.recommended_llm.label}`);
-                }
-                if (systemReport.performance_label) {
-                    items.push(systemReport.performance_label);
-                } else if (systemReport.performance) {
-                    items.push(perfLabels[systemReport.performance] || systemReport.performance);
-                }
-                if (systemReport.notes && systemReport.notes.length) {
-                    systemReport.notes.forEach(n => items.push(`ℹ ${n}`));
-                }
-                if (systemReport.errors && systemReport.errors.length && systemReport.ollama_download_url) {
-                    items.push(`→ Ollama : ${systemReport.ollama_download_url}`);
-                }
-                if (systemReport.errors && systemReport.errors.length && systemReport.python_download_url) {
-                    items.push(`→ Python : ${systemReport.python_download_url}`);
-                }
-
-                list.innerHTML = items.map(t => `<li>${t}</li>`).join('');
-                banner.style.display = 'block';
+                renderConfigChecklist(systemReport);
             } catch (e) {
-                banner.className = 'system-banner warn';
-                title.textContent = 'Impossible de vérifier la configuration';
-                list.innerHTML = '<li>Rechargez la page ou relancez ./start.sh</li>';
-                banner.style.display = 'block';
+                renderConfigChecklist({ checklist: [], ready_for_run_model: false });
+                if (runBtn) runBtn.disabled = true;
             }
         }
 
@@ -568,6 +685,18 @@
             window.location.href = '/download';
         });
 
+        function statusIcon(item) {
+            if (item.annotation_status === 'complete' || item.is_processed) return '✅';
+            if (item.annotation_status === 'partial') return '🟡';
+            return '⏳';
+        }
+
+        function statusLabel(item) {
+            if (item.annotation_status === 'complete' || item.is_processed) return 'Processed';
+            if (item.annotation_status === 'partial') return 'Partially annotated';
+            return 'Needs Annotation';
+        }
+
         function initializeUI() {
             if(!currentData || currentData.length === 0) return;
             
@@ -578,10 +707,10 @@
             const select = document.getElementById('referenceSelect');
             select.innerHTML = '';
             currentData.forEach((item, idx) => {
-                const isProcessed = item.is_processed ? '✅' : '⏳';
+                const icon = statusIcon(item);
                 const option = document.createElement('option');
                 option.value = idx;
-                option.text = `[${idx}] ${isProcessed} ${item.news.substring(0, 60)}...`;
+                option.text = `[${idx}] ${icon} ${item.news.substring(0, 60)}...`;
                 select.appendChild(option);
             });
             
@@ -620,11 +749,13 @@
             
             const item = currentData[currentIndex];
             const statusEl = document.getElementById('processingStatus');
-            if(item.is_processed) {
-                statusEl.textContent = 'Status: Processed';
+            const label = statusLabel(item);
+            statusEl.textContent = `Status: ${label}`;
+            if (item.annotation_status === 'complete' || item.is_processed) {
                 statusEl.style.color = 'var(--success-color)';
+            } else if (item.annotation_status === 'partial') {
+                statusEl.style.color = '#b8860b';
             } else {
-                statusEl.textContent = 'Status: Needs Annotation';
                 statusEl.style.color = 'var(--accent-color)';
             }
         }
@@ -809,10 +940,10 @@
                 });
                 const result = await response.json();
                 if (response.ok) {
-                    currentData[currentIndex].is_processed = true;
-                    // update select text
+                    currentData[currentIndex].annotation_status = result.annotation_status || 'complete';
+                    currentData[currentIndex].is_processed = result.is_processed !== false;
                     const opt = document.getElementById('referenceSelect').options[currentIndex];
-                    opt.text = opt.text.replace('⏳', '✅');
+                    opt.text = `[${currentIndex}] ${statusIcon(currentData[currentIndex])} ${currentData[currentIndex].news.substring(0, 60)}...`;
                     
                     if(currentIndex < currentData.length - 1) {
                         // Find the next unprocessed item
@@ -858,17 +989,13 @@
             
             if(!currentData) return alert("Please load a JSON file first.");
 
-            const advisories = [
-                ...(systemReport?.errors || []),
-                ...(systemReport?.warnings || []),
-            ];
-            if (advisories.length) {
-                const proceed = confirm(
-                    "Avertissements sur votre configuration :\n\n" +
-                    advisories.join("\n") +
-                    "\n\nL'annotation peut être lente ou partielle. Continuer quand même ?"
+            if (!systemReport?.ready_for_run_model) {
+                const missing = systemReport?.missing_required || [];
+                return alert(
+                    missing.length
+                        ? 'Run Model indisponible. Manque : ' + missing.join(', ')
+                        : 'Run Model indisponible — completez la configuration.'
                 );
-                if (!proceed) return;
             }
             
             document.getElementById('loadingOverlay').style.display = 'flex';
@@ -896,8 +1023,14 @@
                     processedIds = result.processed_ids;
                     initializeUI();
                 } else {
-                    statusDiv.textContent = "Error: " + result.error;
+                    const partial = result.data && Array.isArray(result.data);
+                    statusDiv.textContent = (partial ? result.message + " — " : "Error: ") + result.error;
                     statusDiv.style.color = 'var(--accent-color)';
+                    if (partial) {
+                        currentData = result.data;
+                        processedIds = result.processed_ids || [];
+                        initializeUI();
+                    }
                 }
             } catch(e) {
                 document.getElementById('loadingOverlay').style.display = 'none';

@@ -135,17 +135,15 @@ def main() -> int:
             ensure_ollama_binary()
 
         cfg = load_cascade_config()
-        disk = estimate_disk_need(ROOT, cfg, ram_gb_val=ram_gb())
-        if not disk.get("disk_ok"):
+        disk_report = build_report(ROOT, cfg)
+        hw = disk_report.get("hardware", {})
+        if hw.get("disk_required_gb") and not hw.get("disk_ok"):
             print(
-                f"⚠ Espace disque limité : {disk['disk_free_gb']} Go libres, "
-                f"~{disk['disk_required_gb']} Go recommandés."
+                f"⚠ Espace disque limité : {hw['disk_free_gb']} Go libres, "
+                f"~{hw['disk_required_gb']} Go recommandés."
             )
-        else:
-            print(
-                f"Espace disque : {disk['disk_free_gb']} Go libres "
-                f"(besoin estimé ~{disk['disk_required_gb']} Go)"
-            )
+        elif hw.get("disk_free_gb") is not None:
+            print(f"Espace disque : {hw['disk_free_gb']} Go libres")
 
         if not args.skip_models:
             ensure_models(python_cmd)
