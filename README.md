@@ -48,6 +48,15 @@ Au chargement de l'app, une checklist vérifie **8 prérequis obligatoires** :
 **Run Model** n'est disponible que si tous ces points sont ✓ (bouton désactivé + blocage API sinon).
 RAM, GPU et performance sont informatifs seulement.
 
+### Routage cascade (résumé)
+
+| Situation | Comportement |
+|-----------|--------------|
+| DeBERTa confiant (≥ 95 %) | Annotation automatique |
+| Classe `against` / `not_related` ambiguë | DeBERTa seul |
+| Classe `supporting` / `undetermined` ambiguë | LLM Qwen (P3) puis consensus ou revue humaine |
+| Désaccord fort DeBERTa / LLM | Rejet ou flag « human review » |
+
 ## Modèles ML (DeBERTa, SBERT)
 
 Les poids fine-tunés (~1,5 Go) ne sont **pas** dans Git.
@@ -95,7 +104,8 @@ Protocole : `protocole.md`
 python scripts/system_check.py
 
 # Relancer le setup complet
-./start.sh
+./start.sh          # Mac / Linux
+start.bat           # Windows CMD
 ```
 
 Variables optionnelles : copier `.env.example` vers `.env` (`OLLAMA_LLM_MODEL`, `MODELS_DOWNLOAD_URL`, etc.).
