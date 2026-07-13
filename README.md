@@ -38,7 +38,7 @@ Le script de démarrage installe le reste : venv, PyTorch (CPU / CUDA / MPS), mo
 
 ## Checklist Configuration (interface web)
 
-Au chargement de l'app, une checklist vérifie **8 prérequis obligatoires** :
+Au chargement de l'app, une checklist vérifie **7 prérequis obligatoires** :
 
 - Python, PyTorch, sentence-transformers ≥ 5.5
 - Modèles ML (DeBERTa, SBERT, cross-encoder)
@@ -56,6 +56,7 @@ RAM, GPU et performance sont informatifs seulement.
 | Classe `against` / `not_related` ambiguë | DeBERTa seul |
 | Classe `supporting` / `undetermined` ambiguë | LLM Qwen (P3) puis consensus ou revue humaine |
 | Désaccord fort DeBERTa / LLM | Rejet ou flag « human review » |
+| Timeout LLM | Revue humaine, le batch continue |
 
 ## Modèles ML (DeBERTa, SBERT)
 
@@ -73,13 +74,15 @@ Modèle : **Qwen2.5-7B** (`qwen2.5:7b-instruct`).
 
 Forcer un autre modèle : `OLLAMA_LLM_MODEL=mon-modele:tag ./start.sh`
 
+Variables optionnelles : copier `.env.example` vers `.env` (`OLLAMA_HOST`, `OLLAMA_LLM_MODEL`, `MODELS_DOWNLOAD_URL`, etc.).
+
 ### Timeouts et keep_alive
 
 Configurés dans `cascade/config.json` :
 
 | Paramètre | Valeur | Rôle |
 |-----------|--------|------|
-| `inference.timeout` | 300 s (5 min) | Temps max par appel LLM |
+| `inference.timeout` | 600 s (10 min) | Temps max par appel LLM |
 | `run_model.no_annotation_timeout` | 360 s (6 min) | Arrêt si aucune cible pré-remplie |
 | `inference.keep_alive` | 30 min | Qwen reste en RAM après le dernier appel LLM (appels suivants plus rapides) |
 
@@ -108,9 +111,8 @@ python scripts/system_check.py
 start.bat           # Windows CMD
 ```
 
-Variables optionnelles : copier `.env.example` vers `.env` (`OLLAMA_LLM_MODEL`, `MODELS_DOWNLOAD_URL`, etc.).
-
 Si Run Model s'arrête en cours de route, la progression partielle est sauvegardée (JSON + base locale).
+Un chronomètre affiche la durée totale d'annotation à la fin du batch.
 
 ## API statut
 

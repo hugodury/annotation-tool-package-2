@@ -24,7 +24,22 @@ ID_TO_LABEL = {v: k for k, v in LABEL_TO_ID.items()}
 
 def load_config() -> dict:
     with open(CASCADE_DIR / "config.json", encoding="utf-8") as f:
-        return json.load(f)
+        cfg = json.load(f)
+    return apply_env_overrides(cfg)
+
+
+def apply_env_overrides(cfg: dict) -> dict:
+    """Surcharges documentées dans .env.example (sans modifier config.json)."""
+    cfg = json.loads(json.dumps(cfg))
+    host = os.environ.get("OLLAMA_HOST", "").strip()
+    if host:
+        cfg["ollama_host"] = host.rstrip("/")
+    llm_tag = os.environ.get("OLLAMA_LLM_MODEL", "").strip()
+    if llm_tag:
+        llm = dict(cfg.get("llm") or {})
+        llm["ollama"] = llm_tag
+        cfg["llm"] = llm
+    return cfg
 
 
 def load_protocol() -> str:
@@ -110,7 +125,7 @@ def ollama_generate(
     prompt: str,
     temperature: float,
     num_predict: int,
-    timeout: int = 300,
+    timeout: int = 600,
     keep_alive: str = "30m",
 ) -> str:
     payload = json.dumps(
@@ -179,7 +194,7 @@ class CascadeEngine:
                 prompt,
                 inf["temperature"],
                 inf["num_predict"],
-                timeout=int(inf.get("timeout", 300)),
+                timeout=int(inf.get("timeout", 600)),
                 keep_alive=str(inf.get("keep_alive", "30m")),
             )
         except (urllib.error.URLError, TimeoutError, OSError) as e:
@@ -238,7 +253,16 @@ class CascadeEngine:
         result["llm_pred"] = llm_label
         result["llm_conf"] = round(llm_conf, 4)
         result["llm_sim"] = llm_score
-        result["error"] = err
+
+        if err:
+            result["llm_error"] = err
+            result.update(
+                route="human",
+                related=deberta_label,
+                similarity_annotation=deberta_sim,
+                requires_human_review=True,
+            )
+            return result
 
         if llm_label == deberta_label:
             result.update(

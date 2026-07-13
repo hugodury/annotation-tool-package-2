@@ -5,7 +5,7 @@ Set-Location $PSScriptRoot
 $PythonCmd = $null
 foreach ($cmd in @("python", "py", "python3")) {
     if (Get-Command $cmd -ErrorAction SilentlyContinue) {
-        & $cmd --version 2>&1 | Out-Null
+        & $cmd -c "import sys; exit(0 if sys.version_info >= (3,9) else 1)" 2>&1 | Out-Null
         if ($LASTEXITCODE -eq 0) { $PythonCmd = $cmd; break }
     }
 }

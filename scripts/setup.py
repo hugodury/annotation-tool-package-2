@@ -11,11 +11,16 @@ import subprocess
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(ROOT / ".env")
 VENV_DIR = ROOT / "venv"
 IS_WINDOWS = platform.system() == "Windows"
 
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
+from cascade.core import load_config as load_cascade_config  # noqa: E402
 from disk_check import estimate_disk_need  # noqa: E402
 from ollama_service import ensure_ollama_ready  # noqa: E402
 from prerequisites import ensure_ollama_binary, ensure_python  # noqa: E402
@@ -77,11 +82,6 @@ def ensure_models(python_cmd: str | None = None) -> None:
     print("Checking ML models (DeBERTa, SBERT, cross-encoder)...")
     py = python_cmd or str(venv_python())
     run([py, str(ROOT / "scripts" / "download_models.py")])
-
-
-def load_cascade_config() -> dict:
-    path = ROOT / "cascade" / "config.json"
-    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def ensure_ollama_llm(cfg: dict) -> None:

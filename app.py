@@ -10,7 +10,10 @@ import numpy as np
 import torch
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env")
 sys.path.insert(0, str(BASE_DIR / "scripts"))
 from ollama_service import (  # noqa: E402
     ensure_ollama_ready,
@@ -23,6 +26,23 @@ from system_check import build_report  # noqa: E402
 cross_encoder_model = None
 sbert_model = None
 cascade_engine = None
+
+
+def _format_elapsed(seconds: float) -> str:
+    s = int(round(seconds))
+    if s < 60:
+        return f"{s} s"
+    m, rem = divmod(s, 60)
+    if m < 60:
+        return f"{m} min {rem} s" if rem else f"{m} min"
+    h, rem_m = divmod(m, 60)
+    tail = f" {rem_m} min" if rem_m else ""
+    return f"{h} h{tail}" + (f" {rem} s" if rem else "")
+
+
+def _elapsed_info(batch_start: float) -> dict:
+    elapsed = round(time.monotonic() - batch_start, 1)
+    return {"elapsed_seconds": elapsed, "elapsed_label": _format_elapsed(elapsed)}
 
 def get_cascade_engine():
     global cascade_engine
@@ -242,8 +262,9 @@ with app.app_context():
 
 
 def _load_cascade_config() -> dict:
-    cfg_path = BASE_DIR / "cascade" / "config.json"
-    return json.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.is_file() else {}
+    from cascade.core import load_config
+
+    return load_config()
 
 
 # Au démarrage : installer/démarrer Ollama et télécharger le LLM en arrière-plan.
@@ -503,16 +524,19 @@ def auto_annotate():
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=4)
         enriched = enrich_data_with_status(original_filename, data)
+        elapsed = _elapsed_info(batch_start)
         return jsonify({
             'error': error_msg,
             'message': (
                 f"Run Model interrompu — {targets_annotated_count} cible(s) pre-remplie(s) "
-                f"avant arret. Progression partielle sauvegardee."
+                f"avant arret. Progression partielle sauvegardee. "
+                f"Duree totale : {elapsed['elapsed_label']}."
             ),
             'annotated_count': references_fully_annotated_count,
             'data': enriched,
             'processed_ids': list(get_processed_ids_for_file(original_filename)),
             'routing_stats': routing_stats,
+            **elapsed,
         }), status_code
     
     for idx in range(start_index, end_index + 1):
@@ -557,18 +581,23 @@ def auto_annotate():
             out = engine.route(anchor_text, target_text, tau_auto=threshold)
             
             # Check for LLM service error
-            if out.get("error") is not None:
+            # Erreur fatale seulement si la cascade n'a pas pu router la paire
+            if out.get("error") is not None and out.get("route") is None:
                 llm_tag = engine.llm_cfg.get("ollama", "LLM")
+                elapsed = _elapsed_info(batch_start)
                 return jsonify({
                     'error': (
                         f"Ollama service error: {out['error']}. "
                         f"Ensure Ollama is running and model '{llm_tag}' is pulled "
                         f"(run: python scripts/setup.py)."
-                    )
+                    ),
+                    **elapsed,
                 }), 503
                 
             route_name = out["route"]
             target['cascade_route'] = route_name
+            if out.get("llm_error"):
+                target['llm_error'] = out["llm_error"]
             
             # If the route is an auto-annotation route:
             if route_name in {"deberta_auto", "deberta_ambiguous", "consensus"}:
@@ -621,12 +650,15 @@ def auto_annotate():
         f"{routing_stats['consensus']} LLM consensus. "
         f"Flagged: {routing_stats['human']} for human review, {routing_stats['rejected']} rejected."
     )
+    elapsed = _elapsed_info(batch_start)
+    msg += f" Duree totale : {elapsed['elapsed_label']}."
         
     return jsonify({
         'message': msg,
         'annotated_count': references_fully_annotated_count,
         'data': data,
-        'processed_ids': list(processed_ids)
+        'processed_ids': list(processed_ids),
+        **elapsed,
     })
 
 if __name__ == '__main__':

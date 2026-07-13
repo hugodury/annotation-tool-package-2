@@ -19,7 +19,7 @@
   "inference": {
     "temperature": 0,
     "num_predict": 512,
-    "timeout": 300,
+    "timeout": 600,
     "keep_alive": "30m"
   },
   "run_model": {

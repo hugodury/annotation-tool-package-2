@@ -388,6 +388,7 @@
         </div>
         <h4 class="mt-3">Processing Auto-Annotation...</h4>
         <p>This may take a moment depending on the number of items and your hardware.</p>
+        <p id="annotationTimer" class="mt-2 mb-0 text-muted">Temps ecoule : 0 s</p>
     </div>
 
     <div class="app-container">
@@ -474,6 +475,40 @@
         let processedIds = [];
         let currentIndex = 0;
         let systemReport = null;
+        let annotationTimerInterval = null;
+
+        function formatDuration(totalSeconds) {
+            const s = Math.round(totalSeconds);
+            if (s < 60) return s + ' s';
+            const m = Math.floor(s / 60);
+            const rs = s % 60;
+            if (m < 60) return rs ? `${m} min ${rs} s` : `${m} min`;
+            const h = Math.floor(m / 60);
+            const rm = m % 60;
+            let out = `${h} h`;
+            if (rm) out += ` ${rm} min`;
+            if (rs) out += ` ${rs} s`;
+            return out;
+        }
+
+        function startAnnotationTimer() {
+            const el = document.getElementById('annotationTimer');
+            if (!el) return;
+            const t0 = Date.now();
+            if (annotationTimerInterval) clearInterval(annotationTimerInterval);
+            el.textContent = 'Temps ecoule : 0 s';
+            annotationTimerInterval = setInterval(() => {
+                const sec = (Date.now() - t0) / 1000;
+                el.textContent = 'Temps ecoule : ' + formatDuration(sec);
+            }, 1000);
+        }
+
+        function stopAnnotationTimer() {
+            if (annotationTimerInterval) {
+                clearInterval(annotationTimerInterval);
+                annotationTimerInterval = null;
+            }
+        }
 
         function updateRunModelButton(report) {
             const runBtn = document.getElementById('runAutoAnnotate');
@@ -999,6 +1034,7 @@
             }
             
             document.getElementById('loadingOverlay').style.display = 'flex';
+            startAnnotationTimer();
             const statusDiv = document.getElementById('autoAnnotateStatus');
             statusDiv.textContent = '';
             
@@ -1012,6 +1048,7 @@
                     })
                 });
                 const result = await response.json();
+                stopAnnotationTimer();
                 document.getElementById('loadingOverlay').style.display = 'none';
                 
                 if(response.ok) {
@@ -1024,7 +1061,11 @@
                     initializeUI();
                 } else {
                     const partial = result.data && Array.isArray(result.data);
-                    statusDiv.textContent = (partial ? result.message + " — " : "Error: ") + result.error;
+                    let statusText = (partial ? result.message + " — " : "Error: ") + result.error;
+                    if (!partial && result.elapsed_label) {
+                        statusText += ` (duree : ${result.elapsed_label})`;
+                    }
+                    statusDiv.textContent = statusText;
                     statusDiv.style.color = 'var(--accent-color)';
                     if (partial) {
                         currentData = result.data;
@@ -1033,6 +1074,7 @@
                     }
                 }
             } catch(e) {
+                stopAnnotationTimer();
                 document.getElementById('loadingOverlay').style.display = 'none';
                 statusDiv.textContent = "Error running model.";
                 statusDiv.style.color = 'var(--accent-color)';
