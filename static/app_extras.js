@@ -167,9 +167,16 @@
     };
 
     window.cancelRunModel = async function () {
+        const msgEl = document.getElementById('runProgressMessage');
         try {
-            await fetch('/api/auto_annotate/cancel', { method: 'POST' });
-            showToast('Annulation demandee…', 'warning');
+            const resp = await fetch('/api/auto_annotate/cancel', { method: 'POST' });
+            const data = await resp.json();
+            if (!resp.ok) {
+                showToast(data.error || 'Aucun batch en cours', 'warning');
+                return;
+            }
+            if (msgEl) msgEl.textContent = 'Annulation demandee…';
+            showToast('Annulation en cours…', 'warning');
         } catch (e) {
             showToast('Impossible d annuler', 'danger');
         }

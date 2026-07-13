@@ -42,6 +42,7 @@ def get_job_status() -> dict[str, Any]:
             "progress": deepcopy(_state.get("progress") or {}),
             "result": deepcopy(_state.get("result")),
             "error": _state.get("error"),
+            "cancel_requested": _cancel_requested,
         }
     return out
 
@@ -193,11 +194,13 @@ def request_cancel_batch() -> bool:
         if not _state["running"]:
             return False
         _cancel_requested = True
+        _state["progress"]["message"] = "Annulation demandee…"
         return True
 
 
 def _cancelled() -> bool:
-    return _cancel_requested
+    with _lock:
+        return _cancel_requested
 
 
 def start_batch(
@@ -299,6 +302,8 @@ def _run_batch_inner(
 
     logger = _setup_logger(base_dir / "logs")
     try:
+        from cascade.core import BatchCancelledError
+
         batch_start = time.monotonic()
         _set_progress(message="Chargement des modeles ML (peut prendre 1-3 min sur CPU)…")
         cfg = app_mod._load_cascade_config()
@@ -313,15 +318,35 @@ def _run_batch_inner(
         if is_cpu:
             app_mod.cascade_engine = None
 
-        try:
-            engine = app_mod.get_cascade_engine()
-            if is_cpu:
-                engine.cfg = cfg
-            sbert = app_mod.get_sbert_model()
-        except Exception as e:
-            logger.error("Echec chargement modeles: %s", e)
-            _finish(error=str(e))
+        load_box: dict[str, Any] = {}
+        load_errors: list[BaseException] = []
+
+        def _load_models() -> None:
+            try:
+                eng = app_mod.get_cascade_engine()
+                if is_cpu:
+                    eng.cfg = cfg
+                load_box["engine"] = eng
+                load_box["sbert"] = app_mod.get_sbert_model()
+            except BaseException as e:
+                load_errors.append(e)
+
+        loader = threading.Thread(target=_load_models, daemon=True)
+        loader.start()
+        while loader.is_alive():
+            if _cancelled():
+                logger.info("Batch annule pendant chargement des modeles")
+                _finish(error="Batch annule.")
+                return
+            loader.join(0.5)
+
+        if load_errors:
+            logger.error("Echec chargement modeles: %s", load_errors[0])
+            _finish(error=str(load_errors[0]))
             return
+
+        engine = load_box["engine"]
+        sbert = load_box["sbert"]
 
         with open(file_path, encoding="utf-8") as f:
             data = json.load(f)
@@ -482,7 +507,23 @@ def _run_batch_inner(
                 target_date = str(target_date_raw)[:10] if target_date_raw else "N/A"
                 target_text = f"[Topic: {target_topic}] [Date: {target_date}] {target_news}"
 
-                out = engine.route(anchor_text, target_text, tau_auto=threshold)
+                try:
+                    out = engine.route(
+                        anchor_text,
+                        target_text,
+                        tau_auto=threshold,
+                        should_cancel=_cancelled,
+                    )
+                except BatchCancelledError:
+                    logger.info(
+                        "Batch annule pendant cible ref=%s pair=%s/%s",
+                        idx,
+                        i + 1,
+                        len(targets),
+                    )
+                    _abort_cancelled()
+                    return
+
                 route_name = out["route"]
                 target["cascade_route"] = route_name
                 if out.get("llm_error"):
@@ -497,6 +538,8 @@ def _run_batch_inner(
                     if route_name == "consensus":
                         target["similarity_annotation"] = round(out["llm_sim"], 4)
                     else:
+                        if _abort_cancelled():
+                            return
                         emb_anchor = sbert.encode([anchor_text], show_progress_bar=False)[0]
                         emb_target = sbert.encode([target_text], show_progress_bar=False)[0]
                         sim = np.dot(emb_anchor, emb_target) / (

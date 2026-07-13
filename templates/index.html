@@ -772,6 +772,10 @@
                 const st = await resp.json();
                 if (st.running) {
                     updateRunProgress(st.progress, true);
+                    if (st.cancel_requested) {
+                        const msgEl = document.getElementById('runProgressMessage');
+                        if (msgEl) msgEl.textContent = 'Annulation demandee…';
+                    }
                     return;
                 }
 
@@ -782,7 +786,7 @@
 
                 if (st.result) {
                     const result = st.result;
-                    const isPartial = result.partial === true;
+                    const isPartial = result.partial === true || st.error === 'Batch annule.';
                     renderFrenchSummary(result, isPartial);
                     if (result.data) {
                         currentData = result.data;

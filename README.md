@@ -146,12 +146,27 @@ Badge **Tout installé** requis avant **Run Model**.
 3. Cliquer **Run Model** — le batch s'exécute **en arrière-plan** (réponse HTTP 202)
 4. Suivre la **barre de progression** : cibles, références, message d'étape
 5. **Continuer** : reprend à la prochaine référence incomplète de la plage
-6. **Annuler** : arrêt demandé (effectif entre deux cibles)
+6. **Annuler** : arrêt du batch en cours (voir ci-dessous)
 7. **Voir les logs** : tail du fichier `logs/run_model_YYYYMMDD.log`
 
 Estimation de durée affichée avant lancement (`/api/auto_annotate/estimate`).
 
 À la fin : **résumé en français** (DeBERTa auto, consensus, revue humaine, durée, lien vers la première référence à corriger).
+
+#### Annulation pendant Run Model
+
+Le bouton **Annuler** (overlay de progression) :
+
+1. Envoie `POST /api/auto_annotate/cancel` — l'interface affiche « Annulation demandée… »
+2. **Interrompt** l'appel LLM en cours (Ollama en streaming) ou attend la fin de l'inférence DeBERTa (~1 s max)
+3. Fonctionne aussi pendant le **chargement des modèles** (avant la première cible)
+4. **Sauvegarde** les cibles déjà traitées dans le JSON + checkpoint SQLite
+5. Affiche un **résumé partiel** et ferme l'overlay
+6. La cible en cours au moment du clic n'est en général **pas** enregistrée
+
+Pour reprendre : **Continuer** puis **Run Model** (reprise à la prochaine référence incomplète).
+
+---
 
 ### 4. Annotation manuelle
 
@@ -194,7 +209,9 @@ Les champs écrits par la cascade dans chaque cible : `related`, `similarity_ann
 - **Backup auto** avant chaque batch
 - **Validation** : indices de plage, taille d'annotation à l'enregistrement manuel
 - **Parsing LLM robuste** : extraction JSON imbriquée + blocs ` ```json ` + retries Ollama
-- **Progression temps réel** : polling `/api/auto_annotate/status` toutes les 2 s
+- **Ollama en streaming** : permet l'annulation rapide des appels LLM en cours
+- **Annulation interruptible** : DeBERTa, LLM et chargement des modèles
+- **Progression temps réel** : polling `/api/auto_annotate/status` toutes les 2 s (barre « en cours »)
 - **Reprise au rechargement** : si un batch était en cours, l'overlay reprend automatiquement
 
 ---
@@ -221,7 +238,7 @@ Les champs écrits par la cascade dans chaque cible : `related`, `similarity_ann
 | GET | `/api/auto_annotate/status` | État et progression du batch |
 | POST | `/api/auto_annotate/estimate` | Estimation durée / cibles |
 | GET | `/api/auto_annotate/resume` | Index de reprise dans une plage |
-| POST | `/api/auto_annotate/cancel` | Demande d'annulation du batch |
+| POST | `/api/auto_annotate/cancel` | Annulation interruptible du batch en cours |
 
 ---
 
@@ -260,6 +277,7 @@ start.bat           # Windows CMD
 | Run Model indisponible | Compléter la checklist (modèles ML, Ollama, Qwen) |
 | Session perdue après reload | **Reprendre la dernière session** ou sélecteur **Sessions** |
 | DB désynchronisée | **Resync DB** depuis l'interface |
+| Annuler sans effet | Recharger la page (Ctrl+F5) — l'annulation interrompt le LLM en streaming sous ~10 s |
 | Batch interrompu | Progression partielle sauvegardée ; **Continuer** pour reprendre |
 
 ---

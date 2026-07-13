@@ -8,7 +8,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import torch
@@ -23,6 +23,11 @@ LABEL_TO_ID = {"against": 0, "not_related": 1, "supporting": 2, "undetermined": 
 ID_TO_LABEL = {v: k for k, v in LABEL_TO_ID.items()}
 
 
+class BatchCancelledError(Exception):
+    """Levee lorsque l'utilisateur annule un batch Run Model en cours."""
+
+
+CancelCheck = Callable[[], bool] | None
 def load_config() -> dict:
     with open(CASCADE_DIR / "config.json", encoding="utf-8") as f:
         cfg = json.load(f)
@@ -152,12 +157,13 @@ def ollama_generate(
     num_predict: int,
     timeout: int = 600,
     keep_alive: str = "30m",
+    should_cancel: CancelCheck = None,
 ) -> str:
     payload = json.dumps(
         {
             "model": model,
             "prompt": prompt,
-            "stream": False,
+            "stream": True,
             "keep_alive": keep_alive,
             "options": {"temperature": temperature, "num_predict": num_predict},
         }
@@ -167,8 +173,24 @@ def ollama_generate(
         data=payload,
         headers={"Content-Type": "application/json"},
     )
+    parts: list[str] = []
     with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read())["response"]
+        while True:
+            if should_cancel and should_cancel():
+                raise BatchCancelledError("Batch annule par l'utilisateur.")
+            line = resp.readline()
+            if not line:
+                break
+            line = line.decode("utf-8").strip()
+            if not line:
+                continue
+            obj = json.loads(line)
+            chunk = obj.get("response")
+            if chunk:
+                parts.append(chunk)
+            if obj.get("done"):
+                break
+    return "".join(parts)
 
 
 class CascadeEngine:
@@ -193,7 +215,38 @@ class CascadeEngine:
         self.device = device
         self.deberta = CrossEncoder(str(model_path), device=device)
 
-    def deberta_predict(self, anchor: str, target: str) -> tuple[str, float, float]:
+    def deberta_predict(
+        self,
+        anchor: str,
+        target: str,
+        should_cancel: CancelCheck = None,
+    ) -> tuple[str, float, float]:
+        if should_cancel and should_cancel():
+            raise BatchCancelledError("Batch annule par l'utilisateur.")
+
+        if not should_cancel:
+            return self._deberta_predict_impl(anchor, target)
+
+        holder: dict[str, Any] = {}
+        err: list[BaseException] = []
+
+        def _work() -> None:
+            try:
+                holder["result"] = self._deberta_predict_impl(anchor, target)
+            except BaseException as e:
+                err.append(e)
+
+        worker = __import__("threading").Thread(target=_work, daemon=True)
+        worker.start()
+        while worker.is_alive():
+            if should_cancel():
+                raise BatchCancelledError("Batch annule par l'utilisateur.")
+            worker.join(0.25)
+        if err:
+            raise err[0]
+        return holder["result"]
+
+    def _deberta_predict_impl(self, anchor: str, target: str) -> tuple[str, float, float]:
         logits = self.deberta.predict([[anchor, target]], convert_to_numpy=True, show_progress_bar=False)
         if logits.ndim == 1:
             logits = logits.reshape(1, -1)
@@ -207,7 +260,12 @@ class CascadeEngine:
     def _active_llm_tag(self) -> str:
         return os.environ.get("OLLAMA_LLM_MODEL") or self.llm_cfg["ollama"]
 
-    def llm_predict(self, anchor: str, target: str) -> tuple[str, float, float, str | None]:
+    def llm_predict(
+        self,
+        anchor: str,
+        target: str,
+        should_cancel: CancelCheck = None,
+    ) -> tuple[str, float, float, str | None]:
         prompt_id = self.llm_cfg["prompt"]
         prompt = build_prompt(prompt_id, anchor, target, self.few_shot)
         model = self._active_llm_tag()
@@ -215,6 +273,8 @@ class CascadeEngine:
         retries = int(inf.get("llm_retries", 2))
         last_err: str | None = None
         for attempt in range(retries + 1):
+            if should_cancel and should_cancel():
+                raise BatchCancelledError("Batch annule par l'utilisateur.")
             try:
                 raw = ollama_generate(
                     self.cfg["ollama_host"],
@@ -224,6 +284,7 @@ class CascadeEngine:
                     inf["num_predict"],
                     timeout=int(inf.get("timeout", 600)),
                     keep_alive=str(inf.get("keep_alive", "30m")),
+                    should_cancel=should_cancel,
                 )
                 parsed = parse_llm_json(raw) or {}
                 label, score = postprocess_prediction(
@@ -232,18 +293,28 @@ class CascadeEngine:
                 )
                 llm_conf = float(_safe_float(parsed.get("confidence")) or 0.5)
                 return label, score, llm_conf, None
+            except BatchCancelledError:
+                raise
             except (urllib.error.URLError, TimeoutError, OSError) as e:
                 last_err = str(e)
                 if attempt < retries:
                     time.sleep(min(2 ** attempt, 5))
         return "undetermined", 0.0, 0.5, last_err
 
-    def route(self, anchor: str, target: str, tau_auto: float | None = None) -> dict:
+    def route(
+        self,
+        anchor: str,
+        target: str,
+        tau_auto: float | None = None,
+        should_cancel: CancelCheck = None,
+    ) -> dict:
         if tau_auto is None:
             tau_auto = self.cfg["tau_deberta_auto"]
         tau_reject = self.cfg["tau_disagreement_reject"]
 
-        deberta_label, deberta_conf, deberta_sim = self.deberta_predict(anchor, target)
+        deberta_label, deberta_conf, deberta_sim = self.deberta_predict(
+            anchor, target, should_cancel=should_cancel
+        )
 
         result = {
             "llm_model": self.llm_cfg["label"],
@@ -280,7 +351,9 @@ class CascadeEngine:
             )
             return result
 
-        llm_label, llm_score, llm_conf, err = self.llm_predict(anchor, target)
+        llm_label, llm_score, llm_conf, err = self.llm_predict(
+            anchor, target, should_cancel=should_cancel
+        )
         result["llm_pred"] = llm_label
         result["llm_conf"] = round(llm_conf, 4)
         result["llm_sim"] = llm_score
