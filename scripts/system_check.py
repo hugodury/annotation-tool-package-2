@@ -279,7 +279,7 @@ def build_checklist(
         },
         {
             "id": "disk",
-            "label": "Espace disque libre",
+            "label": "Espace disque",
             "ok": True if install_done else (disk_ok if fresh_gb else None),
             "required": False,
             "detail": (

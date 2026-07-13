@@ -11,6 +11,9 @@ instance/
 uploads/
 annotations.db
 
+# Run Model logs (terrain)
+logs/
+
 # Models (too large for standard GitHub repo — distributed via GitHub Release)
 /models
 /models/

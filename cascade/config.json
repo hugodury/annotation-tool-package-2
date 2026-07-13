@@ -20,10 +20,18 @@
     "temperature": 0,
     "num_predict": 512,
     "timeout": 600,
-    "keep_alive": "30m"
+    "keep_alive": "30m",
+    "llm_retries": 2
   },
   "run_model": {
-    "no_annotation_timeout": 360
+    "no_annotation_timeout": 360,
+    "save_every_n_refs": 3,
+    "cpu_slow": {
+      "enabled": true,
+      "inference_timeout_sec": 900,
+      "max_refs_suggested": 50,
+      "sec_per_target_estimate": 5
+    }
   },
   "llm_auto_select": true,
   "llm_profiles": [

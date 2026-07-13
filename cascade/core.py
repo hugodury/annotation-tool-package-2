@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -83,6 +84,30 @@ def postprocess_prediction(label: str, score: Any) -> tuple[str, float]:
 
 def parse_llm_json(text: str) -> dict | None:
     text = text.strip()
+    if not text:
+        return None
+    # Bloc ```json ... ```
+    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL | re.IGNORECASE)
+    if fence:
+        try:
+            return json.loads(fence.group(1))
+        except json.JSONDecodeError:
+            pass
+    # Premier objet JSON equilibre
+    start = text.find("{")
+    if start >= 0:
+        depth = 0
+        for pos in range(start, len(text)):
+            ch = text[pos]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(text[start : pos + 1])
+                    except json.JSONDecodeError:
+                        break
     m = re.search(r"\{[^{}]*\}", text, re.DOTALL)
     if not m:
         return None
@@ -187,25 +212,31 @@ class CascadeEngine:
         prompt = build_prompt(prompt_id, anchor, target, self.few_shot)
         model = self._active_llm_tag()
         inf = self.cfg["inference"]
-        try:
-            raw = ollama_generate(
-                self.cfg["ollama_host"],
-                model,
-                prompt,
-                inf["temperature"],
-                inf["num_predict"],
-                timeout=int(inf.get("timeout", 600)),
-                keep_alive=str(inf.get("keep_alive", "30m")),
-            )
-        except (urllib.error.URLError, TimeoutError, OSError) as e:
-            return "undetermined", 0.0, 0.5, str(e)
-        parsed = parse_llm_json(raw) or {}
-        label, score = postprocess_prediction(
-            parsed.get("related", "undetermined"),
-            parsed.get("similarity_annotation"),
-        )
-        llm_conf = float(_safe_float(parsed.get("confidence")) or 0.5)
-        return label, score, llm_conf, None
+        retries = int(inf.get("llm_retries", 2))
+        last_err: str | None = None
+        for attempt in range(retries + 1):
+            try:
+                raw = ollama_generate(
+                    self.cfg["ollama_host"],
+                    model,
+                    prompt,
+                    inf["temperature"],
+                    inf["num_predict"],
+                    timeout=int(inf.get("timeout", 600)),
+                    keep_alive=str(inf.get("keep_alive", "30m")),
+                )
+                parsed = parse_llm_json(raw) or {}
+                label, score = postprocess_prediction(
+                    parsed.get("related", "undetermined"),
+                    parsed.get("similarity_annotation"),
+                )
+                llm_conf = float(_safe_float(parsed.get("confidence")) or 0.5)
+                return label, score, llm_conf, None
+            except (urllib.error.URLError, TimeoutError, OSError) as e:
+                last_err = str(e)
+                if attempt < retries:
+                    time.sleep(min(2 ** attempt, 5))
+        return "undetermined", 0.0, 0.5, last_err
 
     def route(self, anchor: str, target: str, tau_auto: float | None = None) -> dict:
         if tau_auto is None:

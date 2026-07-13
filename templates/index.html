@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="fr">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -379,16 +379,98 @@
             padding: 0;
         }
         .config-missing-actions li { margin-bottom: 0.2rem; }
+        .run-progress-wrap {
+            width: min(420px, 90vw);
+            margin-top: 1rem;
+        }
+        .run-progress-label {
+            font-size: 0.95rem;
+            margin-bottom: 0.35rem;
+        }
+        .run-summary-card {
+            margin-top: 0.75rem;
+            padding: 0.85rem 1rem;
+            background: #f0f7f4;
+            border: 1px solid #c3e6cb;
+            border-radius: 8px;
+            font-size: 0.9rem;
+        }
+        .run-summary-card.partial {
+            background: #fff8f0;
+            border-color: #ffeeba;
+        }
+        .run-summary-card h6 { margin-bottom: 0.5rem; font-weight: 600; }
+        .run-summary-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 0.35rem 1rem; }
+        .run-estimate-hint {
+            display: block;
+            margin-top: 0.35rem;
+            color: #6c757d;
+            font-size: 0.82rem;
+        }
+        .run-estimate-hint.warn { color: #b45309; }
+        #toastHost {
+            position: fixed;
+            top: 1rem;
+            right: 1rem;
+            z-index: 10000;
+            min-width: 280px;
+        }
+        #activeFileLabel { font-size: 0.9rem; color: #495057; }
+        #corpusStats {
+            font-size: 0.88rem;
+            color: #495057;
+            margin-top: 0.5rem;
+            padding: 0.5rem 0.75rem;
+            background: #f8f9fa;
+            border-radius: 6px;
+        }
+        #cascadeLegend {
+            font-size: 0.82rem;
+            color: #6c757d;
+            margin-top: 0.35rem;
+        }
+        #runLogPanel {
+            margin-top: 1rem;
+            max-width: min(640px, 92vw);
+            text-align: left;
+        }
+        #runLogContent {
+            max-height: 200px;
+            overflow: auto;
+            background: #212529;
+            color: #f8f9fa;
+            padding: 0.75rem;
+            border-radius: 6px;
+            font-size: 0.75rem;
+        }
     </style>
 </head>
 <body>
+    <div id="toastHost" aria-live="polite"></div>
     <div class="loading-overlay" id="loadingOverlay">
         <div class="spinner-border text-primary" role="status" style="width: 3rem; height: 3rem;">
             <span class="visually-hidden">Loading...</span>
         </div>
-        <h4 class="mt-3">Processing Auto-Annotation...</h4>
-        <p>This may take a moment depending on the number of items and your hardware.</p>
-        <p id="annotationTimer" class="mt-2 mb-0 text-muted">Temps ecoule : 0 s</p>
+        <h4 class="mt-3">Annotation automatique en cours…</h4>
+        <p id="runProgressMessage" class="mb-1 text-muted">Demarrage…</p>
+        <div class="run-progress-wrap">
+            <div id="runProgressLabel" class="run-progress-label">0/0 cibles — ref 0/0</div>
+            <div class="progress" style="height: 1.25rem;">
+                <div id="runProgressBar" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%">0%</div>
+            </div>
+        </div>
+        <p id="annotationTimer" class="mt-3 mb-0 text-muted">Temps ecoule : 0 s</p>
+        <div class="mt-3 d-flex gap-2 flex-wrap justify-content-center">
+            <button type="button" id="btnCancelRunModel" class="btn btn-outline-danger btn-sm">
+                <i class="fas fa-stop-circle me-1"></i>Annuler
+            </button>
+            <button type="button" id="btnShowLogs" class="btn btn-outline-secondary btn-sm">
+                <i class="fas fa-file-alt me-1"></i>Voir les logs
+            </button>
+        </div>
+        <div id="runLogPanel" style="display:none;">
+            <pre id="runLogContent"></pre>
+        </div>
     </div>
 
     <div class="app-container">
@@ -412,41 +494,68 @@
                         <small id="configInstallNote" class="text-muted d-block mt-1"></small>
                         <div id="configMissingActions" class="config-missing-actions" style="display:none;"></div>
                     </div>
-                    <h5 class="mb-3">1. Upload & Manage</h5>
+                    <h5 class="mb-3">1. Charger et gerer</h5>
+                    <div id="activeFileLabel" class="mb-2">Fichier actif : —</div>
+                    <div class="mb-2">
+                        <label class="form-label small mb-1" for="sessionSelect">Sessions enregistrees</label>
+                        <select id="sessionSelect" class="form-select form-select-sm"></select>
+                    </div>
                     <form id="uploadForm" class="mb-3">
                         <div class="input-group">
                             <input type="file" class="form-control" id="jsonFile" accept=".json">
-                            <button type="submit" class="btn btn-primary">Load</button>
+                            <button type="submit" class="btn btn-primary">Charger</button>
                         </div>
                     </form>
-                    <div class="d-flex gap-2 mt-2">
-                        <button id="resumeSession" class="btn btn-secondary btn-sm flex-fill"><i class="fas fa-history me-1"></i>Resume Last Session</button>
-                        <button id="downloadFile" class="btn btn-success btn-sm flex-fill"><i class="fas fa-download me-1"></i>Download JSON</button>
+                    <div class="d-flex gap-2 mt-2 flex-wrap">
+                        <button id="resumeSession" class="btn btn-secondary btn-sm flex-fill"><i class="fas fa-history me-1"></i>Reprendre la derniere session</button>
+                        <button id="downloadFile" class="btn btn-success btn-sm flex-fill"><i class="fas fa-download me-1"></i>Telecharger JSON</button>
+                        <button id="resyncDb" type="button" class="btn btn-outline-info btn-sm flex-fill"><i class="fas fa-sync me-1"></i>Resync DB</button>
                     </div>
-                    <button id="clearDatabase" class="btn clear-button btn-sm mt-3 w-100">Clear Database</button>
+                    <button id="clearDatabase" class="btn clear-button btn-sm mt-3 w-100">Vider le cache SQLite</button>
                 </div>
             </div>
             <div class="col-md-7">
                 <div class="auto-annotate-panel h-100">
                     <h5 class="mb-3">2. Auto-Annotate (AI Model)</h5>
-                    <div class="d-flex align-items-center gap-2 mb-2">
-                        <input type="number" id="autoStart" class="form-control form-control-sm" placeholder="Start Index" min="0">
-                        <input type="number" id="autoEnd" class="form-control form-control-sm" placeholder="End Index" min="0">
+                    <div class="d-flex align-items-center gap-2 mb-2 flex-wrap">
+                        <input type="number" id="autoStart" class="form-control form-control-sm" placeholder="Index debut" min="0" style="max-width:7rem;">
+                        <input type="number" id="autoEnd" class="form-control form-control-sm" placeholder="Index fin" min="0" style="max-width:7rem;">
+                        <input type="number" id="autoThreshold" class="form-control form-control-sm" placeholder="Seuil τ" min="0" max="1" step="0.01" value="0.95" title="Seuil de confiance DeBERTa (masquage auto)" style="max-width:6rem;">
                         <button id="runAutoAnnotate" class="btn btn-primary btn-sm" style="white-space: nowrap;" disabled title="Verification de la configuration…"><i class="fas fa-robot me-1"></i>Run Model</button>
+                        <button id="resumeBatch" class="btn btn-outline-secondary btn-sm" style="white-space: nowrap;" disabled title="Reprendre le batch a la prochaine reference non traitee"><i class="fas fa-forward me-1"></i>Continuer</button>
                     </div>
-                    <small class="text-muted">Disponible lorsque tous les prerequis obligatoires de la checklist sont valides.</small>
-                    <div id="autoAnnotateStatus" class="mt-2 fw-bold"></div>
+                    <small id="runEstimateHint" class="run-estimate-hint"></small>
+                    <small class="text-muted d-block">Disponible lorsque tous les prerequis obligatoires de la checklist sont valides.</small>
+                    <div id="autoAnnotateStatus" class="mt-2"></div>
                 </div>
             </div>
         </div>
 
         <div id="navigationPanel" class="navigation-panel" style="display: none;">
-            <button id="btnPrev" class="btn btn-outline-primary"><i class="fas fa-chevron-left me-2"></i>Previous</button>
+            <button id="btnPrev" class="btn btn-outline-primary"><i class="fas fa-chevron-left me-2"></i>Precedent</button>
             <div class="flex-grow-1 px-4 text-center">
+                <div class="d-flex gap-2 justify-content-center align-items-center flex-wrap mb-2">
+                    <select id="refFilter" class="form-select form-select-sm" style="max-width: 11rem;">
+                        <option value="all">Toutes les refs</option>
+                        <option value="pending">En attente</option>
+                        <option value="partial">Partielles</option>
+                        <option value="complete">Terminees</option>
+                        <option value="review">A revoir</option>
+                    </select>
+                    <button id="btnNextReview" type="button" class="btn btn-outline-warning btn-sm">
+                        <i class="fas fa-search me-1"></i>Prochaine revue
+                    </button>
+                </div>
                 <select id="referenceSelect" class="form-select" style="max-width: 600px; margin: 0 auto;"></select>
                 <div id="processingStatus" class="mt-2 fw-bold"></div>
+                <div id="corpusStats" style="display:none;"></div>
+                <div id="cascadeLegend">
+                    <i class="fas fa-robot" style="color:#0f5132"></i> DeBERTa auto &nbsp;
+                    <i class="fas fa-brain" style="color:#084298"></i> Consensus LLM &nbsp;
+                    <i class="fas fa-user-edit" style="color:#664d03"></i> Revue humaine
+                </div>
             </div>
-            <button id="btnNext" class="btn btn-outline-primary">Next<i class="fas fa-chevron-right ms-2"></i></button>
+            <button id="btnNext" class="btn btn-outline-primary">Suivant<i class="fas fa-chevron-right ms-2"></i></button>
         </div>
 
         <div id="singleItemView" style="display: none;">
@@ -458,10 +567,10 @@
                      <div class="database-news-list" id="databaseNewsContainer"></div>
                      <div class="text-center mt-4 mb-5" style="display:flex; justify-content:center; gap:10px;">
                          <button class="btn save-button" onclick="saveCurrentAnnotation()">
-                             <i class="fas fa-save me-2"></i>Save & Next
+                             <i class="fas fa-save me-2"></i>Enregistrer et suivant
                          </button>
                          <button class="btn dismiss-section-btn" onclick="dismissCurrentSection()">
-                             <i class="fas fa-ban me-2"></i>Dismiss & Next
+                             <i class="fas fa-ban me-2"></i>Ignorer et suivant
                          </button>
                      </div>
                  </div>
@@ -470,12 +579,15 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="{{ url_for('static', filename='app_extras.js') }}"></script>
     <script>
-        let currentData = null;
-        let processedIds = [];
-        let currentIndex = 0;
+        var currentData = null;
+        var processedIds = [];
+        var currentIndex = 0;
         let systemReport = null;
         let annotationTimerInterval = null;
+        let runModelPollInterval = null;
+        let runModelBusy = false;
 
         function formatDuration(totalSeconds) {
             const s = Math.round(totalSeconds);
@@ -512,14 +624,20 @@
 
         function updateRunModelButton(report) {
             const runBtn = document.getElementById('runAutoAnnotate');
+            const resumeBtn = document.getElementById('resumeBatch');
             if (!runBtn) return;
             const ollamaEnsure = report?.ollama_ensure || {};
             const ready = report?.ready_for_run_model === true;
             const preparing = ollamaEnsure.status === 'running';
-            const canRun = ready && !preparing;
+            const canRun = ready && !preparing && !runModelBusy;
             runBtn.disabled = !canRun;
+            if (resumeBtn) {
+                resumeBtn.disabled = !canRun || !currentData;
+            }
             if (!canRun) {
-                if (preparing) {
+                if (runModelBusy) {
+                    runBtn.title = 'Run Model en cours…';
+                } else if (preparing) {
                     runBtn.title = 'Preparation Ollama / LLM en cours…';
                 } else if (report?.missing_required?.length) {
                     runBtn.title = 'Manque : ' + report.missing_required.join(', ');
@@ -529,6 +647,175 @@
             } else {
                 runBtn.title = '';
             }
+        }
+
+        function setRunModelBusy(busy) {
+            runModelBusy = busy;
+            updateRunModelButton(systemReport || {});
+        }
+
+        function updateRunProgress(progress, isRunning) {
+            const p = progress || {};
+            const targetsDone = p.targets_done || 0;
+            const targetsTotal = p.targets_total || 0;
+            const refsDone = p.refs_done || 0;
+            const refsTotal = p.refs_total || 0;
+            const refDisplay = p.current_ref_num || refsDone;
+            let displayDone = targetsDone;
+            const msg = p.message || '';
+            const workStarted = msg.includes('cible') || msg.includes('Reference');
+            if (isRunning && targetsTotal > 0 && targetsDone < targetsTotal && workStarted) {
+                displayDone = targetsDone + 1;
+            }
+            const inFlight = isRunning && displayDone > targetsDone;
+            const label = `${displayDone}/${targetsTotal} cibles${inFlight ? ' (en cours)' : ''} — ref ${refDisplay}/${refsTotal}`;
+            const labelEl = document.getElementById('runProgressLabel');
+            const barEl = document.getElementById('runProgressBar');
+            const msgEl = document.getElementById('runProgressMessage');
+            if (labelEl) labelEl.textContent = label;
+            if (msgEl && p.message) msgEl.textContent = p.message;
+            const pct = targetsTotal > 0
+                ? Math.min(100, Math.max(inFlight ? 1 : 0, Math.round((displayDone / targetsTotal) * 100)))
+                : 0;
+            if (barEl) {
+                barEl.style.width = pct + '%';
+                barEl.textContent = pct + '%';
+            }
+        }
+
+        function renderFrenchSummary(result, isPartial) {
+            const statusDiv = document.getElementById('autoAnnotateStatus');
+            const s = result.summary_fr;
+            if (!s) {
+                statusDiv.innerHTML = `<div class="fw-bold" style="color:var(--accent-color)">${result.message || result.error || ''}</div>`;
+                return;
+            }
+            const reviewIdx = result.first_review_index ?? s.first_review_index;
+            let reviewLink = '';
+            if (reviewIdx != null && reviewIdx >= 0) {
+                reviewLink = `<button type="button" class="btn btn-sm btn-outline-primary mt-2" onclick="goToReference(${reviewIdx})"><i class="fas fa-edit me-1"></i>Corriger la reference ${reviewIdx}</button>`;
+            }
+            statusDiv.innerHTML = `
+                <div class="run-summary-card${isPartial ? ' partial' : ''}">
+                    <h6>${s.title || 'Annotation terminee'}${isPartial ? ' (partiel)' : ''}</h6>
+                    <div class="run-summary-stats">
+                        <span><strong>Pre-remplies</strong> : ${s.prefilled_label || ''}</span>
+                        <span><strong>Duree</strong> : ${s.duration_label || result.elapsed_label || ''}</span>
+                        <span>DeBERTa auto : ${s.deberta_auto || 0}</span>
+                        <span>DeBERTa ambigu : ${s.deberta_ambiguous || 0}</span>
+                        <span>Consensus LLM : ${s.consensus || 0}</span>
+                        <span>Revue humaine : ${s.human_review || 0}</span>
+                        <span>Rejetees : ${s.rejected || 0}</span>
+                    </div>
+                    ${reviewLink}
+                </div>`;
+        }
+
+        window.goToReference = function(idx) {
+            if (!currentData || idx < 0 || idx >= currentData.length) return;
+            currentIndex = idx;
+            displayCurrentItem();
+            document.getElementById('navigationPanel').scrollIntoView({ behavior: 'smooth' });
+        };
+
+        async function refreshRunEstimate() {
+            const hint = document.getElementById('runEstimateHint');
+            if (!hint || !currentData) {
+                if (hint) hint.textContent = '';
+                return;
+            }
+            const start = parseInt(document.getElementById('autoStart').value, 10);
+            const end = parseInt(document.getElementById('autoEnd').value, 10);
+            if (Number.isNaN(start) || Number.isNaN(end)) return;
+            try {
+                const resp = await fetch('/api/auto_annotate/estimate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ start_index: start, end_index: end })
+                });
+                const est = await resp.json();
+                if (!resp.ok) {
+                    hint.textContent = est.error || '';
+                    hint.className = 'run-estimate-hint';
+                    return;
+                }
+                let text = `~${est.estimated_label} estimees (${est.targets} cibles, ${est.refs} references)`;
+                if (est.is_cpu) text += ' — mode CPU lent';
+                hint.textContent = text;
+                hint.className = est.warning ? 'run-estimate-hint warn' : 'run-estimate-hint';
+                if (est.warning) hint.textContent += '. ' + est.warning;
+            } catch (e) {
+                hint.textContent = '';
+            }
+        }
+
+        function stopRunModelPoll() {
+            if (runModelPollInterval) {
+                clearInterval(runModelPollInterval);
+                runModelPollInterval = null;
+            }
+        }
+
+        async function pollRunModelStatus() {
+            try {
+                const resp = await fetch('/api/auto_annotate/status');
+                if (resp.status === 404) {
+                    stopRunModelPoll();
+                    stopAnnotationTimer();
+                    document.getElementById('loadingOverlay').style.display = 'none';
+                    setRunModelBusy(false);
+                    if (typeof showToast === 'function') {
+                        showToast('Serveur non a jour — redemarrez Flask (./start.sh)', 'danger');
+                    }
+                    return;
+                }
+                const st = await resp.json();
+                if (st.running) {
+                    updateRunProgress(st.progress, true);
+                    return;
+                }
+
+                stopRunModelPoll();
+                stopAnnotationTimer();
+                document.getElementById('loadingOverlay').style.display = 'none';
+                setRunModelBusy(false);
+
+                if (st.result) {
+                    const result = st.result;
+                    const isPartial = result.partial === true;
+                    renderFrenchSummary(result, isPartial);
+                    if (result.data) {
+                        currentData = result.data;
+                        processedIds = result.processed_ids || [];
+                        initializeUI();
+                    }
+                } else if (st.error) {
+                    const statusDiv = document.getElementById('autoAnnotateStatus');
+                    statusDiv.innerHTML = `<div class="fw-bold" style="color:var(--accent-color)">Erreur : ${st.error}</div>`;
+                }
+            } catch (e) {
+                /* retry next poll */
+            }
+        }
+
+        function startRunModelPoll() {
+            stopRunModelPoll();
+            runModelPollInterval = setInterval(pollRunModelStatus, 2000);
+            pollRunModelStatus();
+        }
+
+        async function checkRunningJobOnLoad() {
+            try {
+                const resp = await fetch('/api/auto_annotate/status');
+                const st = await resp.json();
+                if (st.running) {
+                    setRunModelBusy(true);
+                    document.getElementById('loadingOverlay').style.display = 'flex';
+                    startAnnotationTimer();
+                    updateRunProgress(st.progress, true);
+                    startRunModelPoll();
+                }
+            } catch (e) { /* ignore */ }
         }
 
         function renderConfigChecklist(report) {
@@ -575,8 +862,14 @@
                 }
                 const req = item.required ? '' : ' <span class="text-muted">(recommande)</span>';
                 let detail = item.detail || '';
-                if (installDone && item.id === 'disk' && hw.disk_free_gb != null) {
-                    detail = `${hw.disk_free_gb} Go libres`;
+                if (item.id === 'disk' && hw.disk_free_gb != null) {
+                    if (installDone && freshGb) {
+                        detail = `${hw.disk_free_gb} Go libres (besoin ~${freshGb} Go au 1er lancement)`;
+                    } else if (installDone) {
+                        detail = `${hw.disk_free_gb} Go libres`;
+                    } else if (freshGb) {
+                        detail = `${hw.disk_free_gb} Go libres / ~${freshGb} Go requis`;
+                    }
                 }
                 return `<li class="${cls}">
                     <span class="check-icon">${icon}</span>
@@ -670,6 +963,31 @@
 
         ensureOllamaBackground();
         loadSystemHealth().then(scheduleOllamaPoll);
+        checkRunningJobOnLoad();
+
+        ['autoStart', 'autoEnd'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.addEventListener('change', refreshRunEstimate);
+        });
+
+        document.getElementById('resumeBatch').addEventListener('click', async () => {
+            if (!currentData) return alert('Chargez un fichier JSON d abord.');
+            const start = parseInt(document.getElementById('autoStart').value, 10);
+            const end = parseInt(document.getElementById('autoEnd').value, 10);
+            try {
+                const resp = await fetch(`/api/auto_annotate/resume?start_index=${start}&end_index=${end}`);
+                const hint = await resp.json();
+                if (!resp.ok) return alert(hint.error || 'Erreur reprise');
+                if (hint.all_complete) {
+                    return alert('Toutes les references de cette plage sont deja traitees.');
+                }
+                document.getElementById('autoStart').value = hint.resume_index;
+                await refreshRunEstimate();
+                alert(`Reprise a l index ${hint.resume_index} (${hint.remaining_refs} reference(s) restante(s)). Cliquez Run Model pour lancer.`);
+            } catch (e) {
+                alert('Erreur lors de la reprise du batch.');
+            }
+        });
 
         document.getElementById('uploadForm').addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -689,10 +1007,14 @@
                 if (response.ok) {
                     currentData = data.data;
                     processedIds = data.processed_ids;
+                    if (data.filename && typeof updateActiveFileLabel === 'function') {
+                        updateActiveFileLabel(data.filename);
+                    }
                     initializeUI();
-                    alert("File loaded successfully.");
+                    if (typeof showToast === 'function') showToast('Fichier charge avec succes.', 'success');
                 } else {
-                    alert(data.error || 'Error uploading file');
+                    if (typeof showToast === 'function') showToast(data.error || 'Erreur upload', 'danger');
+                    else alert(data.error || 'Error uploading file');
                 }
             } catch (error) {
                 alert(error.message || 'Error uploading file');
@@ -706,10 +1028,14 @@
                 if (response.ok) {
                     currentData = data.data;
                     processedIds = data.processed_ids;
+                    if (data.filename && typeof updateActiveFileLabel === 'function') {
+                        updateActiveFileLabel(data.filename);
+                    }
                     initializeUI();
-                    alert("Resumed session for: " + data.filename);
+                    if (typeof showToast === 'function') showToast('Session reprise : ' + data.filename, 'success');
                 } else {
-                    alert(data.error || 'Error resuming session');
+                    if (typeof showToast === 'function') showToast(data.error || 'Erreur reprise', 'danger');
+                    else alert(data.error || 'Error resuming session');
                 }
             } catch (error) {
                 alert('Error resuming session');
@@ -725,11 +1051,12 @@
             if (item.annotation_status === 'partial') return '🟡';
             return '⏳';
         }
+        window.statusIcon = statusIcon;
 
         function statusLabel(item) {
-            if (item.annotation_status === 'complete' || item.is_processed) return 'Processed';
-            if (item.annotation_status === 'partial') return 'Partially annotated';
-            return 'Needs Annotation';
+            if (item.annotation_status === 'complete' || item.is_processed) return 'Terminee';
+            if (item.annotation_status === 'partial') return 'Partielle';
+            return 'A annoter';
         }
 
         function initializeUI() {
@@ -738,30 +1065,36 @@
             document.getElementById('navigationPanel').style.display = 'flex';
             document.getElementById('singleItemView').style.display = 'block';
             
-            // Populate select
             const select = document.getElementById('referenceSelect');
-            select.innerHTML = '';
-            currentData.forEach((item, idx) => {
-                const icon = statusIcon(item);
-                const option = document.createElement('option');
-                option.value = idx;
-                option.text = `[${idx}] ${icon} ${item.news.substring(0, 60)}...`;
-                select.appendChild(option);
-            });
-            
-            select.addEventListener('change', (e) => {
-                currentIndex = parseInt(e.target.value);
+            select.onchange = (e) => {
+                currentIndex = parseInt(e.target.value, 10);
                 displayCurrentItem();
-            });
+            };
             
-            // Set initial auto-annotate limits
             document.getElementById('autoStart').value = 0;
             document.getElementById('autoEnd').value = currentData.length - 1;
+            refreshRunEstimate();
 
-            // Display first item
-            currentIndex = 0;
-            displayCurrentItem();
+            if (typeof applyRefFilter === 'function' && document.getElementById('refFilter')) {
+                applyRefFilter();
+            } else {
+                select.innerHTML = '';
+                currentData.forEach((item, idx) => {
+                    const icon = statusIcon(item);
+                    const option = document.createElement('option');
+                    option.value = idx;
+                    option.text = `[${idx}] ${icon} ${item.news.substring(0, 60)}...`;
+                    select.appendChild(option);
+                });
+                currentIndex = 0;
+                displayCurrentItem();
+            }
+            if (typeof updateCorpusStats === 'function') updateCorpusStats();
+            if (typeof loadSessionsList === 'function') loadSessionsList();
         }
+
+        window.displayCurrentItem = displayCurrentItem;
+        window.initializeUI = initializeUI;
 
         document.getElementById('btnPrev').addEventListener('click', () => {
             if(currentIndex > 0) {
@@ -785,7 +1118,7 @@
             const item = currentData[currentIndex];
             const statusEl = document.getElementById('processingStatus');
             const label = statusLabel(item);
-            statusEl.textContent = `Status: ${label}`;
+            statusEl.textContent = `Statut : ${label}`;
             if (item.annotation_status === 'complete' || item.is_processed) {
                 statusEl.style.color = 'var(--success-color)';
             } else if (item.annotation_status === 'partial') {
@@ -799,13 +1132,13 @@
             updateNavigationState();
             const item = currentData[currentIndex];
             const annotation = item.annotation || {};
+            const esc = window.escapeHtml || function (t) { return t == null ? '' : String(t); };
             
-            // Main News Sticky
             const mainContainer = document.getElementById('mainNewsSticky');
             mainContainer.innerHTML = `
-                <div class="main-news-title">${item.news}</div>
-                <div class="main-news-topic"><b>Topic:</b> ${item.topic || ''}</div>
-                <div class="main-news-meta"><b>Metadata:</b> <pre style="background:#f8f9fa; border-radius:6px; padding:8px; overflow-x:auto;">${JSON.stringify(item.metadata, (k, v) => (v === null ? 'NA' : v), 2)}</pre></div>
+                <div class="main-news-title">${esc(item.news)}</div>
+                <div class="main-news-topic"><b>Sujet :</b> ${esc(item.topic || '')}</div>
+                <div class="main-news-meta"><b>Metadonnees :</b> <pre style="background:#f8f9fa; border-radius:6px; padding:8px; overflow-x:auto;">${esc(JSON.stringify(item.metadata, (k, v) => (v === null ? 'NA' : v), 2))}</pre></div>
             `;
             
             // Database targets
@@ -839,7 +1172,7 @@
                 
                 function prettyMeta(meta) {
                     if (!meta) return 'NA';
-                    return JSON.stringify(meta, (k, v) => (v === null ? 'NA' : v), 2);
+                    return esc(JSON.stringify(meta, (k, v) => (v === null ? 'NA' : v), 2));
                 }
                 
                 let html = '';
@@ -862,8 +1195,8 @@
                             </button>
                         </div>
                         <div class="news-content mb-3">
-                            <div class="mb-2"><b>Target Title:</b> ${news.news}</div>
-                            <div class="mb-2"><b>Target Topic:</b> ${news.topic || ''}</div>
+                            <div class="mb-2"><b>Titre cible :</b> ${esc(news.news)}</div>
+                            <div class="mb-2"><b>Sujet cible :</b> ${esc(news.topic || '')}</div>
                             <div><b>Metadata:</b> <pre style="background:#f8f9fa; border-radius:6px; padding:8px; overflow-x:auto;">${prettyMeta(news.metadata)}</pre></div>
                             <div class="mt-2 p-2" style="background:#e9ecef; border-radius:6px; font-family: monospace;">
                                 <b>Saved in JSON:</b> 
@@ -977,31 +1310,34 @@
                 if (response.ok) {
                     currentData[currentIndex].annotation_status = result.annotation_status || 'complete';
                     currentData[currentIndex].is_processed = result.is_processed !== false;
-                    const opt = document.getElementById('referenceSelect').options[currentIndex];
-                    opt.text = `[${currentIndex}] ${statusIcon(currentData[currentIndex])} ${currentData[currentIndex].news.substring(0, 60)}...`;
-                    
-                    if(currentIndex < currentData.length - 1) {
-                        // Find the next unprocessed item
-                        let nextIndex = currentIndex + 1;
-                        while(nextIndex < currentData.length && currentData[nextIndex].is_processed) {
-                            nextIndex++;
-                        }
-                        
-                        // If we found an unprocessed item, go there. Otherwise, just go to the next one.
-                        if (nextIndex < currentData.length) {
-                            currentIndex = nextIndex;
+                    const selectEl = document.getElementById('referenceSelect');
+                    const opt = Array.from(selectEl.options).find(
+                        (o) => parseInt(o.value, 10) === currentIndex
+                    );
+                    if (opt) {
+                        opt.text = `[${currentIndex}] ${statusIcon(currentData[currentIndex])} ${currentData[currentIndex].news.substring(0, 60)}...`;
+                    }
+                    if (typeof showToast === 'function') showToast('Annotation enregistree.', 'success');
+                    if (typeof updateCorpusStats === 'function') updateCorpusStats();
+
+                    const nextIdx = typeof findNextIncompleteIndex === 'function'
+                        ? findNextIncompleteIndex(currentIndex)
+                        : (currentIndex + 1 < currentData.length ? currentIndex + 1 : null);
+                    if (nextIdx != null) {
+                        currentIndex = nextIdx;
+                        if (typeof applyRefFilter === 'function' && document.getElementById('refFilter')?.value !== 'all') {
+                            applyRefFilter();
                         } else {
-                            currentIndex++;
+                            displayCurrentItem();
                         }
-                        
-                        displayCurrentItem();
                         window.scrollTo(0, 0);
                     } else {
-                        alert("Saved! You have reached the last item.");
+                        if (typeof showToast === 'function') showToast('Derniere reference atteinte.', 'info');
                         displayCurrentItem();
                     }
                 } else {
-                    alert(result.error);
+                    if (typeof showToast === 'function') showToast(result.error || 'Erreur', 'danger');
+                    else alert(result.error);
                 }
             } catch (error) {
                 alert('Error saving annotation');
@@ -1019,10 +1355,10 @@
 
         // Auto Annotate
         document.getElementById('runAutoAnnotate').addEventListener('click', async () => {
-            const start = document.getElementById('autoStart').value;
-            const end = document.getElementById('autoEnd').value;
+            const start = parseInt(document.getElementById('autoStart').value, 10);
+            const end = parseInt(document.getElementById('autoEnd').value, 10);
             
-            if(!currentData) return alert("Please load a JSON file first.");
+            if(!currentData) return alert("Chargez un fichier JSON d abord.");
 
             if (!systemReport?.ready_for_run_model) {
                 const missing = systemReport?.missing_required || [];
@@ -1032,64 +1368,111 @@
                         : 'Run Model indisponible — completez la configuration.'
                 );
             }
+
+            let est = null;
+            try {
+                const estResp = await fetch('/api/auto_annotate/estimate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ start_index: start, end_index: end })
+                });
+                est = await estResp.json();
+                if (estResp.ok && est.warning) {
+                    const ok = confirm(
+                        est.warning + '\n\nDuree estimee : ~' + est.estimated_label +
+                        '\n\nLancer quand meme ?'
+                    );
+                    if (!ok) return;
+                } else if (estResp.ok && est.estimated_label) {
+                    const ok = confirm(
+                        `Lancer Run Model sur ${est.refs} references (${est.targets} cibles) ?\n` +
+                        `Duree estimee : ~${est.estimated_label}${est.is_cpu ? ' (CPU lent)' : ''}.`
+                    );
+                    if (!ok) return;
+                }
+            } catch (e) { /* continue without estimate */ }
             
+            setRunModelBusy(true);
             document.getElementById('loadingOverlay').style.display = 'flex';
+            const refsTotal = Math.max(0, end - start + 1);
+            let targetsTotal = est?.targets;
+            if (targetsTotal == null && currentData) {
+                targetsTotal = 0;
+                for (let i = start; i <= end && i < currentData.length; i++) {
+                    targetsTotal += (currentData[i].database || []).length;
+                }
+            }
+            updateRunProgress({
+                targets_done: 0,
+                targets_total: targetsTotal || 0,
+                refs_done: 0,
+                refs_total: est?.refs ?? refsTotal,
+                message: 'Demarrage…'
+            }, true);
             startAnnotationTimer();
             const statusDiv = document.getElementById('autoAnnotateStatus');
-            statusDiv.textContent = '';
+            statusDiv.innerHTML = '';
             
             try {
+                const threshold = parseFloat(document.getElementById('autoThreshold')?.value || '0.95');
                 const response = await fetch('/auto_annotate', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        start_index: parseInt(start),
-                        end_index: parseInt(end)
+                        start_index: start,
+                        end_index: end,
+                        threshold: Number.isNaN(threshold) ? 0.95 : threshold
                     })
                 });
                 const result = await response.json();
+                
+                if (response.status === 202 && result.started) {
+                    startRunModelPoll();
+                    return;
+                }
+
                 stopAnnotationTimer();
                 document.getElementById('loadingOverlay').style.display = 'none';
+                setRunModelBusy(false);
                 
                 if(response.ok) {
-                    statusDiv.textContent = result.message;
-                    statusDiv.style.color = 'var(--success-color)';
-                    
-                    // Reload data
-                    currentData = result.data;
-                    processedIds = result.processed_ids;
-                    initializeUI();
-                } else {
-                    const partial = result.data && Array.isArray(result.data);
-                    let statusText = (partial ? result.message + " — " : "Error: ") + result.error;
-                    if (!partial && result.elapsed_label) {
-                        statusText += ` (duree : ${result.elapsed_label})`;
-                    }
-                    statusDiv.textContent = statusText;
-                    statusDiv.style.color = 'var(--accent-color)';
-                    if (partial) {
+                    renderFrenchSummary(result, false);
+                    if (result.data) {
                         currentData = result.data;
                         processedIds = result.processed_ids || [];
                         initializeUI();
                     }
+                } else {
+                    const partial = result.data && Array.isArray(result.data);
+                    if (partial) {
+                        renderFrenchSummary(result, true);
+                        currentData = result.data;
+                        processedIds = result.processed_ids || [];
+                        initializeUI();
+                    } else {
+                        statusDiv.innerHTML = `<div class="fw-bold" style="color:var(--accent-color)">Erreur : ${result.error || 'echec'}</div>`;
+                    }
                 }
             } catch(e) {
                 stopAnnotationTimer();
+                stopRunModelPoll();
                 document.getElementById('loadingOverlay').style.display = 'none';
-                statusDiv.textContent = "Error running model.";
-                statusDiv.style.color = 'var(--accent-color)';
+                setRunModelBusy(false);
+                statusDiv.innerHTML = '<div class="fw-bold" style="color:var(--accent-color)">Erreur reseau lors du Run Model.</div>';
             }
         });
 
         document.getElementById('clearDatabase').addEventListener('click', async () => {
-            if (confirm('Are you sure you want to clear the database processing history?')) {
+            if (confirm('Vider le cache SQLite (historique de traitement) ? Les fichiers JSON ne sont pas supprimes.')) {
                 try {
                     const response = await fetch('/clear_database', { method: 'POST' });
                     const result = await response.json();
-                    alert(result.message);
-                    location.reload(); // reload page to reset
+                    if (typeof showToast === 'function') showToast(result.message, 'success');
+                    else alert(result.message);
+                    location.reload();
                 } catch (error) {
-                    alert('Error clearing database');
+                    if (typeof showToast === 'function') showToast('Erreur lors du vidage', 'danger');
+                    else alert('Error clearing database');
                 }
             }
         });
