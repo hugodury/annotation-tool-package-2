@@ -6,6 +6,7 @@ import logging
 import os
 import platform
 import re
+import statistics
 import sys
 import threading
 import time
@@ -135,12 +136,166 @@ KNOWN_ROUTES = (
 )
 
 DEFAULT_ROUTE_FRACTIONS: dict[str, float] = {
-    "deberta_auto": 0.52,
-    "deberta_ambiguous": 0.25,
-    "consensus": 0.10,
-    "human": 0.08,
-    "rejected": 0.05,
+    "deberta_auto": 0.68,
+    "deberta_ambiguous": 0.20,
+    "consensus": 0.06,
+    "human": 0.04,
+    "rejected": 0.02,
 }
+
+_session_models_warm = False
+_LOG_TS = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),(\d{3})")
+_TARGET_DONE = re.compile(
+    r"TARGET DONE ref_index=\d+ ref=\d+/\d+ target=\d+/\d+ route=(\w+) duration=([\d.]+)s"
+)
+
+
+def models_warm_in_session() -> bool:
+    return _session_models_warm
+
+
+def _calibration_path(base_dir: Path | None) -> Path | None:
+    if not base_dir:
+        return None
+    return base_dir / "instance" / "estimate_calibration.json"
+
+
+def _load_calibration(base_dir: Path | None, device_type: str) -> dict[str, Any] | None:
+    path = _calibration_path(base_dir)
+    if not path or not path.is_file():
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return None
+        if data.get("device") and data.get("device") != device_type:
+            return None
+        return data
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _save_calibration(base_dir: Path | None, payload: dict[str, Any]) -> None:
+    path = _calibration_path(base_dir)
+    if not path:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+
+
+def _parse_log_timestamp(line: str) -> float | None:
+    m = _LOG_TS.match(line)
+    if not m:
+        return None
+    try:
+        dt = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")
+        return dt.timestamp() + int(m.group(2)) / 1000.0
+    except ValueError:
+        return None
+
+
+def _parse_session_log_stats(log_path: Path) -> tuple[dict[str, list[float]], list[float]]:
+    route_buckets: dict[str, list[float]] = {r: [] for r in KNOWN_ROUTES}
+    startup_delays: list[float] = []
+    if not log_path.is_file():
+        return route_buckets, startup_delays
+    try:
+        lines = log_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return route_buckets, startup_delays
+    batch_start_ts: float | None = None
+    seen_target_in_batch = False
+    for line in lines:
+        if "BATCH START" in line:
+            batch_start_ts = _parse_log_timestamp(line)
+            seen_target_in_batch = False
+            continue
+        if "BATCH END" in line:
+            batch_start_ts = None
+            seen_target_in_batch = False
+            continue
+        m = _TARGET_DONE.search(line)
+        if not m or batch_start_ts is None:
+            continue
+        ts = _parse_log_timestamp(line)
+        route, raw = m.group(1), float(m.group(2))
+        if route in route_buckets and 0.02 <= raw <= 900:
+            route_buckets[route].append(raw)
+            if not seen_target_in_batch and ts is not None:
+                startup_delays.append(max(0.0, ts - batch_start_ts))
+                seen_target_in_batch = True
+    return route_buckets, startup_delays
+
+
+def _median_or_none(values: list[float]) -> float | None:
+    if not values:
+        return None
+    return float(statistics.median(values))
+
+
+def refresh_estimate_calibration(
+    *,
+    base_dir: Path | None,
+    logs_dir: Path | None,
+    device_type: str,
+) -> None:
+    if not base_dir or not logs_dir:
+        return
+    session = logs_dir / SESSION_LOG_FILENAME
+    route_buckets, startup_delays = _parse_session_log_stats(session)
+    if not any(route_buckets.values()):
+        return
+    prev = _load_calibration(base_dir, device_type) or {}
+    routes_out: dict[str, dict[str, float | int]] = dict(prev.get("routes") or {})
+    for route, vals in route_buckets.items():
+        if not vals:
+            continue
+        prev_route = routes_out.get(route) or {}
+        prev_n = int(prev_route.get("n", 0))
+        prev_mean = float(prev_route.get("mean", vals[0]))
+        merged = []
+        if prev_n > 0:
+            merged.extend([prev_mean] * min(prev_n, 40))
+        merged.extend(vals[-80:])
+        routes_out[route] = {
+            "n": min(prev_n + len(vals), 500),
+            "mean": round(statistics.mean(merged), 3),
+            "p50": round(statistics.median(merged), 3),
+        }
+    startup = _median_or_none(startup_delays)
+    prev_startup = float(prev.get("startup_sec", 0)) if prev.get("startup_sec") else None
+    if startup is not None and prev_startup is not None:
+        startup = round(prev_startup * 0.4 + startup * 0.6, 2)
+    elif startup is None:
+        startup = prev_startup
+    _save_calibration(
+        base_dir,
+        {
+            "updated_at": datetime.utcnow().isoformat() + "Z",
+            "device": device_type,
+            "startup_sec": startup,
+            "routes": routes_out,
+        },
+    )
+
+
+def _session_has_prior_targets(logs_dir: Path | None) -> bool:
+    if not logs_dir:
+        return False
+    session = logs_dir / SESSION_LOG_FILENAME
+    if not session.is_file():
+        return False
+    try:
+        text = session.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+    return "TARGET DONE" in text
+
+
+def _device_label(device_type: str) -> str:
+    return {"cuda": "GPU CUDA", "mps": "GPU Apple", "cpu": "CPU"}.get(device_type, device_type.upper())
 
 
 def _normalize_fractions(raw: dict[str, float]) -> dict[str, float]:
@@ -154,7 +309,7 @@ def _route_fractions_from_data(
     data: list,
     *,
     target_is_annotated_fn: Callable[[dict], bool] | None = None,
-    min_samples: int = 24,
+    min_samples: int = 12,
 ) -> dict[str, float] | None:
     counts: dict[str, int] = {r: 0 for r in KNOWN_ROUTES}
     total = 0
@@ -172,7 +327,7 @@ def _route_fractions_from_data(
     return _normalize_fractions({r: float(counts[r]) for r in KNOWN_ROUTES})
 
 
-def _route_fractions_from_logs(logs_dir: Path, *, min_samples: int = 24) -> dict[str, float] | None:
+def _route_fractions_from_logs(logs_dir: Path, *, min_samples: int = 8) -> dict[str, float] | None:
     if not logs_dir.is_dir():
         return None
     pattern = re.compile(r"route=(\w+)")
@@ -205,25 +360,105 @@ def _route_fractions_from_logs(logs_dir: Path, *, min_samples: int = 24) -> dict
     return _normalize_fractions({r: float(counts[r]) for r in KNOWN_ROUTES})
 
 
-def _default_sec_per_route(is_cpu: bool, est_cfg: dict) -> dict[str, float]:
+def _default_sec_per_route(device_type: str, est_cfg: dict) -> dict[str, float]:
+    is_cpu = device_type == "cpu"
     key = "route_sec_cpu" if is_cpu else "route_sec_gpu"
     cfg_map = est_cfg.get(key) or {}
     fallback_cpu = {
-        "deberta_auto": 0.6,
-        "deberta_ambiguous": 0.6,
-        "consensus": 32.0,
-        "human": 28.0,
-        "rejected": 30.0,
+        "deberta_auto": 0.30,
+        "deberta_ambiguous": 0.35,
+        "consensus": 16.0,
+        "human": 14.0,
+        "rejected": 15.0,
     }
     fallback_gpu = {
-        "deberta_auto": 0.35,
-        "deberta_ambiguous": 0.35,
-        "consensus": 14.0,
-        "human": 12.0,
-        "rejected": 14.0,
+        "deberta_auto": 0.20,
+        "deberta_ambiguous": 0.25,
+        "consensus": 8.0,
+        "human": 7.0,
+        "rejected": 8.0,
     }
     base = fallback_cpu if is_cpu else fallback_gpu
+    if device_type == "mps":
+        base = {r: v * 0.85 for r, v in fallback_gpu.items()}
     return {r: float(cfg_map.get(r, base[r])) for r in KNOWN_ROUTES}
+
+
+def _blend_route_seconds(
+    default_sec: float,
+    *,
+    empirical: float | None = None,
+    calibrated: dict[str, float | int] | None = None,
+) -> float:
+    values: list[float] = []
+    if empirical is not None:
+        values.append(empirical)
+    if calibrated:
+        for key in ("p50", "mean"):
+            raw = calibrated.get(key)
+            if raw is not None:
+                values.append(float(raw))
+                break
+    if not values:
+        return default_sec
+    blended = statistics.mean(values)
+    return round(min(blended, default_sec * 1.15), 3)
+
+
+def _resolve_sec_per_route(
+    device_type: str,
+    est_cfg: dict,
+    logs_dir: Path | None,
+    calibration: dict[str, Any] | None,
+) -> tuple[dict[str, float], str]:
+    base = _default_sec_per_route(device_type, est_cfg)
+    empirical = _empirical_route_stats(logs_dir, min_samples=3) if logs_dir else None
+    cal_routes = (calibration or {}).get("routes") or {}
+    merged = dict(base)
+    used_cal = False
+    used_logs = False
+    for route in KNOWN_ROUTES:
+        merged[route] = _blend_route_seconds(
+            base[route],
+            empirical=(empirical or {}).get(route),
+            calibrated=cal_routes.get(route),
+        )
+        if route in (empirical or {}):
+            used_logs = True
+        if route in cal_routes:
+            used_cal = True
+    if used_cal and used_logs:
+        return merged, "calibration locale + session"
+    if used_cal:
+        return merged, "calibration locale"
+    if used_logs:
+        return merged, "session en cours"
+    return merged, f"defaut {_device_label(device_type).lower()}"
+
+
+def _resolve_model_load_sec(
+    *,
+    device_type: str,
+    est_cfg: dict,
+    logs_dir: Path | None,
+    calibration: dict[str, Any] | None,
+    models_warm: bool,
+) -> tuple[float, str]:
+    if models_warm:
+        warm = float(est_cfg.get("model_load_sec_warm", 2))
+        return warm, "modeles deja charges"
+    startup_values: list[float] = []
+    if calibration and calibration.get("startup_sec"):
+        startup_values.append(float(calibration["startup_sec"]))
+    if logs_dir:
+        _, delays = _parse_session_log_stats(logs_dir / SESSION_LOG_FILENAME)
+        if delays:
+            startup_values.append(statistics.median(delays[-5:]))
+    if startup_values:
+        return round(statistics.mean(startup_values), 1), "demarrage mesure"
+    if device_type == "cpu":
+        return float(est_cfg.get("model_load_sec_cpu", 18)), "premier batch CPU"
+    return float(est_cfg.get("model_load_sec_gpu", 6)), f"premier batch {device_type}"
 
 
 def _resolve_route_fractions(
@@ -243,22 +478,6 @@ def _resolve_route_fractions(
     if cfg_frac:
         return _normalize_fractions({r: float(cfg_frac.get(r, 0)) for r in KNOWN_ROUTES}), "config"
     return dict(DEFAULT_ROUTE_FRACTIONS), "defaut"
-
-
-def _resolve_sec_per_route(
-    is_cpu: bool,
-    est_cfg: dict,
-    logs_dir: Path | None,
-) -> tuple[dict[str, float], str]:
-    base = _default_sec_per_route(is_cpu, est_cfg)
-    empirical = _empirical_route_stats(logs_dir) if logs_dir else None
-    if not empirical:
-        return base, "defaut materiel"
-    merged = dict(base)
-    for route, sec in empirical.items():
-        if route in merged:
-            merged[route] = sec
-    return merged, "calibration logs + materiel"
 
 
 def _format_route_breakdown(
@@ -315,7 +534,7 @@ def _empirical_route_stats(logs_dir: Path, *, min_samples: int = 5) -> dict[str,
         return None
     out: dict[str, float] = {}
     for route, vals in buckets.items():
-        if len(vals) < 3:
+        if len(vals) < 2:
             continue
         vals.sort()
         out[route] = vals[len(vals) // 2]
@@ -416,10 +635,17 @@ def estimate_batch(
     target_is_annotated_fn: Callable[[dict], bool] | None = None,
     logs_dir: Path | None = None,
     force_reannotate: bool = False,
+    device_type: str | None = None,
+    models_warm: bool = False,
+    base_dir: Path | None = None,
 ) -> dict[str, Any]:
     run_cfg = cfg.get("run_model", {})
     cpu_slow = run_cfg.get("cpu_slow") or {}
     est_cfg = run_cfg.get("estimate") or {}
+    device = device_type or ("cpu" if is_cpu else "cuda")
+    is_cpu = device == "cpu"
+    warm = models_warm or _session_has_prior_targets(logs_dir) or models_warm_in_session()
+    calibration = _load_calibration(base_dir, device)
 
     range_stats = count_range_annotation_stats(
         data,
@@ -441,19 +667,27 @@ def estimate_batch(
     fractions, frac_source = _resolve_route_fractions(
         data, logs_dir, est_cfg, target_is_annotated_fn=target_is_annotated_fn
     )
-    sec_per_route, sec_source = _resolve_sec_per_route(is_cpu, est_cfg, logs_dir)
+    sec_per_route, sec_source = _resolve_sec_per_route(
+        device, est_cfg, logs_dir, calibration
+    )
+    model_load, load_source = _resolve_model_load_sec(
+        device_type=device,
+        est_cfg=est_cfg,
+        logs_dir=logs_dir,
+        calibration=calibration,
+        models_warm=warm,
+    )
 
     sec_per = sum(fractions[r] * sec_per_route[r] for r in KNOWN_ROUTES)
-    model_load = float(
-        est_cfg.get("model_load_sec_cpu" if is_cpu else "model_load_sec_gpu", 90 if is_cpu else 20)
-    )
-    total_sec = model_load + n_remaining * sec_per
+    ref_overhead = float(est_cfg.get("sec_per_ref_overhead", 0.15))
+    total_sec = model_load + n_remaining * sec_per + n_refs * ref_overhead
 
     breakdown = _format_route_breakdown(fractions, sec_per_route)
-    hw = "CPU" if is_cpu else "GPU"
+    hw = _device_label(device)
     method_label = (
         f"{hw} — repartition ({frac_source}) : {breakdown} ; "
-        f"~{sec_per:.1f} s/cible ({sec_source})"
+        f"~{sec_per:.1f} s/cible ({sec_source}) ; "
+        f"demarrage ~{model_load:.0f}s ({load_source})"
     )
 
     max_refs = int(cpu_slow.get("max_refs_suggested", 50)) if is_cpu else None
@@ -474,6 +708,12 @@ def estimate_batch(
 
     route_fractions_pct = {r: round(fractions[r] * 100, 1) for r in KNOWN_ROUTES}
     route_seconds = {r: round(sec_per_route[r], 2) for r in KNOWN_ROUTES}
+    llm_fraction = round(
+        sum(fractions[r] for r in ("consensus", "human", "rejected")) * 100, 1
+    )
+    deberta_fraction = round(
+        sum(fractions[r] for r in ("deberta_auto", "deberta_ambiguous")) * 100, 1
+    )
 
     return {
         "refs": n_refs,
@@ -482,13 +722,19 @@ def estimate_batch(
         "estimated_seconds": round(total_sec),
         "estimated_label": _format_elapsed(total_sec),
         "sec_per_target": round(sec_per, 2),
-        "estimate_method": f"{frac_source}+{sec_source}",
+        "estimate_method": f"{frac_source}+{sec_source}+{load_source}",
         "estimate_detail": method_label,
         "route_fractions_pct": route_fractions_pct,
         "route_seconds": route_seconds,
         "fraction_source": frac_source,
         "model_load_seconds": round(model_load),
+        "model_load_source": load_source,
         "is_cpu": is_cpu,
+        "device_type": device,
+        "device_label": hw,
+        "models_warm": warm,
+        "llm_fraction_pct": llm_fraction,
+        "deberta_fraction_pct": deberta_fraction,
         "max_refs_suggested": max_refs,
         "warning": warning,
         "has_existing_annotations": range_stats["has_existing_annotations"],
@@ -1105,6 +1351,14 @@ def _run_batch_inner(
             elapsed,
             routing_stats,
         )
+        global _session_models_warm
+        device_type = report.get("hardware", {}).get("gpu", {}).get("device", "cpu")
+        refresh_estimate_calibration(
+            base_dir=base_dir,
+            logs_dir=base_dir / "logs",
+            device_type=device_type,
+        )
+        _session_models_warm = True
         _finish(
             result={
                 "ok": True,

@@ -36,6 +36,7 @@ from run_model_job import (  # noqa: E402
     get_job_status,
     get_session_log_path,
     is_job_running,
+    models_warm_in_session,
     prepare_session_logs,
     request_cancel_batch,
     start_batch,
@@ -1113,7 +1114,8 @@ def api_auto_annotate_estimate():
     force_reannotate = bool(req.get('force_reannotate', False))
     cfg = _load_cascade_config()
     report = build_report(BASE_DIR, cfg)
-    is_cpu = report.get('hardware', {}).get('gpu', {}).get('device') == 'cpu'
+    device = report.get('hardware', {}).get('gpu', {}).get('device', 'cpu')
+    is_cpu = device == 'cpu'
     est = estimate_batch(
         data,
         start_index,
@@ -1124,6 +1126,9 @@ def api_auto_annotate_estimate():
         target_is_annotated_fn=_target_is_annotated,
         logs_dir=BASE_DIR / "logs",
         force_reannotate=force_reannotate,
+        device_type=device,
+        models_warm=models_warm_in_session(),
+        base_dir=BASE_DIR,
     )
     return jsonify(est)
 

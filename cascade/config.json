@@ -37,28 +37,30 @@
       "llm_fraction": 0.18
     },
     "estimate": {
-      "model_load_sec_cpu": 90,
-      "model_load_sec_gpu": 20,
+      "model_load_sec_cpu": 18,
+      "model_load_sec_gpu": 6,
+      "model_load_sec_warm": 2,
+      "sec_per_ref_overhead": 0.15,
       "route_fractions": {
-        "deberta_auto": 0.52,
-        "deberta_ambiguous": 0.25,
-        "consensus": 0.1,
-        "human": 0.08,
-        "rejected": 0.05
+        "deberta_auto": 0.68,
+        "deberta_ambiguous": 0.2,
+        "consensus": 0.06,
+        "human": 0.04,
+        "rejected": 0.02
       },
       "route_sec_cpu": {
-        "deberta_auto": 0.6,
-        "deberta_ambiguous": 0.6,
-        "consensus": 32,
-        "human": 28,
-        "rejected": 30
+        "deberta_auto": 0.3,
+        "deberta_ambiguous": 0.35,
+        "consensus": 16,
+        "human": 14,
+        "rejected": 15
       },
       "route_sec_gpu": {
-        "deberta_auto": 0.35,
-        "deberta_ambiguous": 0.35,
-        "consensus": 14,
-        "human": 12,
-        "rejected": 14
+        "deberta_auto": 0.2,
+        "deberta_ambiguous": 0.25,
+        "consensus": 8,
+        "human": 7,
+        "rejected": 8
       }
     }
   },

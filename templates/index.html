@@ -773,6 +773,8 @@
 
         function renderBatchSummary(result, isPartial) {
             const statusDiv = document.getElementById('autoAnnotateStatus');
+            const hint = document.getElementById('runEstimateHint');
+            if (hint) hint.textContent = '';
             const s = result.summary_en || result.summary_fr;
             if (!s) {
                 statusDiv.innerHTML = `<div class="fw-bold" style="color:var(--accent-color)">${result.message || result.error || ''}</div>`;
@@ -783,20 +785,33 @@
             if (reviewIdx != null && reviewIdx >= 0) {
                 reviewLink = `<button type="button" class="btn btn-sm btn-outline-primary mt-2" onclick="goToReference(${reviewIdx})"><i class="fas fa-edit me-1"></i>Review reference ${reviewIdx}</button>`;
             }
+            const stats = result.routing_stats || {};
+            const routeTotal = Object.values(stats).reduce((sum, n) => sum + (Number(n) || 0), 0) || 0;
+            let routingLine = '';
+            if (routeTotal > 0) {
+                const debertaN = (stats.deberta_auto || 0) + (stats.deberta_ambiguous || 0);
+                const llmN = (stats.consensus || 0) + (stats.human || 0) + (stats.rejected || 0);
+                const debertaPct = Math.round((debertaN / routeTotal) * 100);
+                const llmPct = Math.round((llmN / routeTotal) * 100);
+                routingLine = `<div class="run-summary-routing mt-1"><strong>Routing</strong>: ${debertaPct}% DeBERTa (${debertaN}) · ${llmPct}% LLM local (${llmN}) — `
+                    + `auto ${stats.deberta_auto || 0}, ambiguous ${stats.deberta_ambiguous || 0}, `
+                    + `consensus ${stats.consensus || 0}, review ${stats.human || 0}, rejected ${stats.rejected || 0}</div>`;
+            }
             statusDiv.innerHTML = `
                 <div class="run-summary-card${isPartial ? ' partial' : ''}">
                     <h6>${s.title || 'Annotation complete'}${isPartial ? ' (partial)' : ''}</h6>
                     <div class="run-summary-stats">
                         <span><strong>Pre-filled</strong>: ${s.prefilled_label || ''}</span>
                         <span><strong>Duration</strong>: ${s.duration_label || result.elapsed_label || ''}</span>
-                        <span>DeBERTa auto: ${s.deberta_auto || 0}</span>
-                        <span>DeBERTa ambiguous: ${s.deberta_ambiguous || 0}</span>
-                        <span>LLM consensus: ${s.consensus || 0}</span>
-                        <span>Human review: ${s.human_review || 0}</span>
-                        <span>Rejected: ${s.rejected || 0}</span>
                     </div>
+                    ${routingLine}
                     ${reviewLink}
                 </div>`;
+        }
+
+        function shouldShowRunEstimate() {
+            const status = document.getElementById('autoAnnotateStatus');
+            return !status?.querySelector('.run-summary-card');
         }
 
         window.goToReference = function(idx) {
@@ -808,7 +823,7 @@
 
         async function refreshRunEstimate() {
             const hint = document.getElementById('runEstimateHint');
-            if (!hint || !currentData) {
+            if (!hint || !currentData || !shouldShowRunEstimate()) {
                 if (hint) hint.textContent = '';
                 return;
             }
@@ -827,13 +842,7 @@
                     hint.className = 'run-estimate-hint';
                     return;
                 }
-                let text = `~${est.estimated_label} estimated (${est.targets_remaining ?? est.targets}/${est.targets_total_in_range ?? est.targets} targets remaining, ${est.refs} refs)`;
-                if (est.sec_per_target) text += ` — ~${est.sec_per_target} s/target`;
-                if (est.is_cpu) text += ' — CPU';
-                if (est.all_annotated || est.has_existing_annotations) {
-                    text += ' — existing annotations (confirmation required)';
-                }
-                hint.textContent = text;
+                hint.textContent = `Indices ${start}–${end}: estimated time ~${est.estimated_label}`;
                 hint.className = est.warning ? 'run-estimate-hint warn' : 'run-estimate-hint';
                 if (est.warning) hint.textContent += '. ' + est.warning;
             } catch (e) {
@@ -1077,6 +1086,8 @@
             const el = document.getElementById(id);
             if (el) el.addEventListener('change', () => {
                 saveRunIndexRange();
+                const status = document.getElementById('autoAnnotateStatus');
+                if (status?.querySelector('.run-summary-card')) status.innerHTML = '';
                 refreshRunEstimate();
             });
         });
@@ -1654,6 +1665,8 @@
             startAnnotationTimer();
             const statusDiv = document.getElementById('autoAnnotateStatus');
             statusDiv.innerHTML = '';
+            const estHint = document.getElementById('runEstimateHint');
+            if (estHint) estHint.textContent = '';
             
             try {
                 const threshold = parseFloat(document.getElementById('autoThreshold')?.value || '0.95');

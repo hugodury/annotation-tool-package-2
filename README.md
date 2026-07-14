@@ -129,10 +129,41 @@ Configurés dans `cascade/config.json` :
 | `inference.keep_alive` | 30 min | Qwen en RAM entre appels |
 | `run_model.no_annotation_timeout` | 360 s | Arrêt si aucune cible annotée |
 | `run_model.save_every_n_refs` | 3 | Checkpoint JSON + DB tous les N refs |
-| `run_model.cpu_slow.*` | — | Timeouts et estimation allongés sur CPU |
-| `run_model.estimate.*` | — | Estimation durée par route (fractions + sec/route) |
+| `run_model.cpu_slow.*` | — | Timeouts allongés sur CPU |
+| `run_model.estimate.*` | — | Estimation durée (matériel, fractions route, calibration) |
 
-Sur CPU, les cibles LLM peuvent prendre **30 s à 2 min** — la barre affiche « running » pendant ce délai.
+Sur CPU, les cibles LLM peuvent prendre **15–45 s** selon la machine — la barre affiche « running » pendant ce délai.
+
+#### Estimation du temps Run Model
+
+L'estimation s'adapte à **chaque ordinateur** (CPU / GPU CUDA / Apple Silicon) :
+
+| Phase | Affichage UI | Logique |
+|-------|--------------|---------|
+| **Avant** Run Model (indices Start–End) | `Indices 400–401: estimated time ~21 s` | Durée seule — **pas** de % DeBERTa/LLM (non prédictible) |
+| **Après** batch terminé | Résumé : durée réelle + **% DeBERTa / % LLM** mesurés | Basé sur `routing_stats` du batch |
+
+**Calcul** (`POST /api/auto_annotate/estimate`) :
+
+```
+temps ≈ démarrage + (cibles restantes × s/cible) + (refs × 0,15 s)
+s/cible = Σ (% route × durée/route)
+```
+
+| Source | Quand |
+|--------|-------|
+| Défauts `run_model.estimate` | 1er lancement sur la machine |
+| Corpus déjà annoté | % routes tirés du JSON actif |
+| Logs session + `instance/estimate_calibration.json` | Après 1+ batch — calibration locale persistante |
+
+Paramètres clés dans `cascade/config.json` :
+
+| Clé | Rôle |
+|-----|------|
+| `model_load_sec_cpu` / `model_load_sec_gpu` | 1er batch (chargement modèles) |
+| `model_load_sec_warm` | Batches suivants (modèles déjà en RAM) |
+| `route_fractions` | Répartition théorique DeBERTa / LLM |
+| `route_sec_cpu` / `route_sec_gpu` | Durée par route selon matériel |
 
 ---
 
@@ -172,7 +203,7 @@ Bloc d'aide intégré **« How Run Model works »** sous les champs d'index.
 3. Cliquer **Run Model** — batch **asynchrone** (HTTP 202)
 4. La plage d'indices est **mémorisée par fichier** (persiste après batch / rechargement page)
 5. **Run Model reprend automatiquement** à la première référence incomplète de la plage (plus de bouton « Continuer » séparé)
-6. Estimation courte affichée avant lancement (`/api/auto_annotate/estimate`)
+6. **Estimation** sous les indices : durée seule pour la plage choisie (disparaît pendant/après le batch ; résumé avec routing à la fin)
 7. **Annuler** / **View logs** depuis l'overlay de progression
 
 #### Comportement skip / re-annotation
@@ -214,6 +245,7 @@ Protocole détaillé : `protocole.md`
 | Dossier configurable | UI **Browse** ou variable `ANNOTATION_DATA_DIR` (défaut : `uploads/`) |
 | JSON sur le disque | **Source de vérité** — peuvent être hors du dossier de stockage |
 | `instance/saved_sessions.json` | Registre des sessions (chemins absolus, dernière utilisation) |
+| `instance/estimate_calibration.json` | Calibration durées par route (auto, après chaque batch) |
 | `{storage}/backups/` | Backup auto avant chaque Run Model |
 | `instance/annotations.db` | Cache SQLite (statuts UI) |
 | `logs/run_model_session.log` | Log Run Model — **réinitialisé à chaque redémarrage** du serveur |
@@ -234,7 +266,7 @@ Champs cascade par cible : `related`, `similarity_annotation`, `cascade_route`, 
 - Progression temps réel (polling `/api/auto_annotate/status` toutes les 2 s)
 - Reprise overlay si batch en cours au rechargement page
 - Chemins sessions sans altération des noms (`_safe_upload_path` — espaces, parenthèses)
-- Estimation durée calibrée par route (% DeBERTa / consensus / human / rejected)
+- Estimation durée calibrée par machine (`estimate_calibration.json` + logs session)
 - Sélecteurs système cross-platform avec messages d'erreur explicites
 
 ---
@@ -264,7 +296,7 @@ Champs cascade par cible : `related`, `similarity_annotation`, `cascade_route`, 
 | GET | `/api/dialogs/capabilities` | Sélecteurs natifs disponibles sur la machine |
 | POST | `/auto_annotate` | Lance Run Model (202, `force_reannotate` optionnel) |
 | GET | `/api/auto_annotate/status` | Progression du batch |
-| POST | `/api/auto_annotate/estimate` | Estimation durée / cibles |
+| POST | `/api/auto_annotate/estimate` | Estimation durée pour une plage d'indices |
 | GET | `/api/auto_annotate/resume` | Index de reprise dans une plage |
 | POST | `/api/auto_annotate/cancel` | Annulation interruptible |
 | GET | `/api/logs/run_model/latest` | Tail du log Run Model |
@@ -307,6 +339,8 @@ python scripts/disk_check.py
 | Batch timeout après 1 cible sur CPU | Corrigé (`pairs_evaluated` + timeout CPU 900 s) |
 | Annuler sans effet | Attendre ~10 s (streaming LLM) ou recharger la page |
 | Batch interrompu | Partiel sauvegardé ; relancer **Run Model** (reprise auto) |
+| Estimation trop longue au 1er batch | Normal — se recalibre après le 1er Run Model sur la machine |
+| Estimation affichée après batch | Changer Start/End pour la réafficher ; le résumé routing reste sous le batch |
 | Logs anciens après redémarrage | Comportement normal — un seul log par session serveur |
 
 ---
