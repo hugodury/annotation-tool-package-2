@@ -46,6 +46,18 @@ Ouvrir **http://127.0.0.1:5000**
 
 Le script de démarrage installe le reste : venv, PyTorch (CPU / CUDA / MPS), modèles ML, pull Qwen via Ollama.
 
+### Sélecteurs système (Browse / Choose JSON)
+
+Les boutons **Browse** (dossier de stockage) et **Choose JSON file** ouvrent le **sélecteur natif** de l'OS, avec repli automatique :
+
+| OS | Dossier | Fichier JSON |
+|----|---------|--------------|
+| **Linux** | zenity → kdialog → yad → tkinter | idem |
+| **macOS** | Finder (osascript) → tkinter | idem |
+| **Windows** | PowerShell / pwsh → tkinter | idem |
+
+Sur Linux, une session bureau (`DISPLAY` ou `WAYLAND_DISPLAY`) est requise. L'app vérifie la disponibilité via `GET /api/dialogs/capabilities`.
+
 ---
 
 ## Checklist configuration (interface web)
@@ -104,7 +116,7 @@ Modèle par défaut : **Qwen2.5-7B** (`qwen2.5:7b-instruct`).
 OLLAMA_LLM_MODEL=mon-modele:tag ./start.sh
 ```
 
-Variables optionnelles : `.env.example` → `.env` (`OLLAMA_HOST`, `OLLAMA_LLM_MODEL`, etc.).
+Variables optionnelles : `.env.example` → `.env` (`OLLAMA_HOST`, `OLLAMA_LLM_MODEL`, `ANNOTATION_DATA_DIR`, etc.).
 
 ### Timeouts, retries et mode CPU lent
 
@@ -128,10 +140,24 @@ Sur CPU, les cibles LLM peuvent prendre **30 s à 2 min** — la barre affiche �
 
 ### 1. Charger un corpus
 
-- **Upload** : fichier JSON VLDBench
-- **Saved sessions** : liste des JSON dans `uploads/` (clic pour charger, × pour supprimer)
+- **Browse** : ouvre le sélecteur système pour choisir le **dossier de stockage** (où sont enregistrés les nouveaux JSON)
+- **Choose JSON file** : ouvre le sélecteur système pour ouvrir un JSON **à son emplacement réel** sur le disque (pas de copie forcée)
+- **Storage folder** : chemin affiché ; verrouillable via `ANNOTATION_DATA_DIR` dans `.env`
+- **Saved sessions** : registre des fichiers ouverts ou utilisés avec Run Model (`instance/saved_sessions.json`) — **indépendant** du dossier de stockage
 - **Active file** : fichier courant en haut du panneau gauche
 - **Download JSON** : export du fichier actif
+
+#### Sessions sauvegardées
+
+Chaque fichier JSON **choisi** ou **traité par Run Model** est ajouté au registre. La liste reste visible même après changement de dossier de stockage.
+
+Clic sur **×** : modal avec 3 choix :
+
+| Action | Effet |
+|--------|-------|
+| **Liste seulement** | Retire l'entrée du registre — le fichier **reste sur l'ordinateur** |
+| **Supprimer de l'ordinateur** | Efface définitivement le fichier du disque (+ cache SQLite associé) |
+| **Annuler** | Ne rien faire |
 
 ### 2. Vérifier la configuration
 
@@ -174,7 +200,8 @@ Bloc d'aide intégré **« How Run Model works »** sous les champs d'index.
 
 ### 5. Maintenance
 
-- **Clear processing cache (SQLite)** : vide le cache local **sans** supprimer les JSON dans `uploads/`
+- **Clear processing cache (SQLite)** : vide le cache local **sans** supprimer les JSON sur le disque
+- **Clear Run Model logs** : vide le log de la session serveur courante (`run_model_session.log`)
 
 Protocole détaillé : `protocole.md`
 
@@ -184,10 +211,12 @@ Protocole détaillé : `protocole.md`
 
 | Emplacement | Rôle |
 |-------------|------|
-| `uploads/*.json` | **Source de vérité** |
-| `uploads/backups/` | Backup auto avant chaque Run Model |
+| Dossier configurable | UI **Browse** ou variable `ANNOTATION_DATA_DIR` (défaut : `uploads/`) |
+| JSON sur le disque | **Source de vérité** — peuvent être hors du dossier de stockage |
+| `instance/saved_sessions.json` | Registre des sessions (chemins absolus, dernière utilisation) |
+| `{storage}/backups/` | Backup auto avant chaque Run Model |
 | `instance/annotations.db` | Cache SQLite (statuts UI) |
-| `logs/run_model_*.log` | Logs des batches |
+| `logs/run_model_session.log` | Log Run Model — **réinitialisé à chaque redémarrage** du serveur |
 
 Champs cascade par cible : `related`, `similarity_annotation`, `cascade_route`, `model_confidence` (+ `llm_pred` / `llm_error` si applicable).
 
@@ -206,6 +235,7 @@ Champs cascade par cible : `related`, `similarity_annotation`, `cascade_route`, 
 - Reprise overlay si batch en cours au rechargement page
 - Chemins sessions sans altération des noms (`_safe_upload_path` — espaces, parenthèses)
 - Estimation durée calibrée par route (% DeBERTa / consensus / human / rejected)
+- Sélecteurs système cross-platform avec messages d'erreur explicites
 
 ---
 
@@ -218,21 +248,27 @@ Champs cascade par cible : `related`, `similarity_annotation`, `cascade_route`, 
 | GET | `/api/status` | Checklist configuration |
 | POST | `/api/ensure-ollama` | Prépare Ollama + LLM (async) |
 | GET | `/api/system-check` | Alias diagnostic |
-| POST | `/upload` | Upload JSON |
-| GET | `/resume` | Dernière session dans `uploads/` |
+| POST | `/upload` | Upload JSON (multipart) |
+| POST | `/api/upload/pick` | Sélecteur système — ouvre un JSON |
+| GET | `/resume` | Dernière session dans le dossier de stockage |
 | GET | `/download` | Télécharge le JSON actif |
 | POST | `/save_annotation` | Sauvegarde manuelle |
 | POST | `/clear_database` | Vide le cache SQLite |
-| GET | `/api/sessions` | Liste des sessions |
-| POST | `/api/sessions/load` | Charge une session |
-| POST | `/api/sessions/delete` | Supprime un JSON de `uploads/` |
+| GET | `/api/sessions` | Liste des sessions sauvegardées |
+| POST | `/api/sessions/load` | Charge une session par chemin |
+| POST | `/api/sessions/delete` | Retire du registre (`mode: "list"`) ou supprime du disque (`mode: "disk"`) |
 | POST | `/api/resync` | Resync SQLite ← JSON |
-| GET | `/api/logs/run_model/latest` | Tail du log Run Model |
+| GET | `/api/storage` | Dossier de stockage actuel |
+| POST | `/api/storage` | Changer le dossier (`{ "path": "/abs/path" }`) |
+| POST | `/api/storage/pick` | Sélecteur système — choisir le dossier de stockage |
+| GET | `/api/dialogs/capabilities` | Sélecteurs natifs disponibles sur la machine |
 | POST | `/auto_annotate` | Lance Run Model (202, `force_reannotate` optionnel) |
 | GET | `/api/auto_annotate/status` | Progression du batch |
 | POST | `/api/auto_annotate/estimate` | Estimation durée / cibles |
 | GET | `/api/auto_annotate/resume` | Index de reprise dans une plage |
 | POST | `/api/auto_annotate/cancel` | Annulation interruptible |
+| GET | `/api/logs/run_model/latest` | Tail du log Run Model |
+| POST | `/api/logs/clear` | Vide le log de la session serveur |
 
 ---
 
@@ -259,6 +295,10 @@ python scripts/disk_check.py
 | Problème | Solution |
 |----------|----------|
 | Interface en français / ancienne version | Redémarrer Flask + **Ctrl+Shift+R** dans le navigateur |
+| Browse / Choose JSON ne s'ouvre pas (Linux) | Installer `zenity`, `kdialog` ou `yad` ; vérifier `DISPLAY` / `WAYLAND_DISPLAY` |
+| Browse / Choose JSON ne s'ouvre pas (Windows) | Installer PowerShell ou `pwsh` ; Python avec tkinter |
+| Sessions sauvegardées vides | Choisir un JSON ou lancer Run Model — la liste se remplit automatiquement |
+| Sessions disparaissent après changement de dossier | Corrigé — le registre est indépendant du dossier de stockage |
 | Progression 0/0 | Redémarrer Flask (`./start.sh`) |
 | Compteur lent sur 0/N | Normal pendant un appel LLM ; barre « running » |
 | Run Model indisponible | Compléter la checklist (ML models, Ollama, Qwen) |
@@ -267,6 +307,7 @@ python scripts/disk_check.py
 | Batch timeout après 1 cible sur CPU | Corrigé (`pairs_evaluated` + timeout CPU 900 s) |
 | Annuler sans effet | Attendre ~10 s (streaming LLM) ou recharger la page |
 | Batch interrompu | Partiel sauvegardé ; relancer **Run Model** (reprise auto) |
+| Logs anciens après redémarrage | Comportement normal — un seul log par session serveur |
 
 ---
 
@@ -274,19 +315,21 @@ python scripts/disk_check.py
 
 ```
 annotation-tool-package-2/
-├── app.py                    # Flask, routes, SQLAlchemy
+├── app.py                    # Flask, routes, SQLAlchemy, registre sessions
 ├── cascade/                  # Moteur cascade (DeBERTa + LLM)
 ├── scripts/
 │   ├── setup.py
-│   ├── run_model_job.py      # Batch async, estimation, re-annotation
+│   ├── run_model_job.py      # Batch async, logs session, estimation
 │   ├── annotation_store.py   # Verrous, backups, validation indices
+│   ├── native_dialogs.py     # Sélecteurs système (Linux / macOS / Windows)
+│   ├── session_discovery.py  # Utilitaire scan disque (optionnel)
 │   ├── system_check.py       # Checklist (labels anglais)
 │   └── ollama_service.py
 ├── templates/index.html      # UI anglaise
-├── static/app_extras.js      # Sessions, filtres, toasts
-├── uploads/                  # JSON annotés (non versionnés)
-├── logs/                     # Logs Run Model (non versionnés)
-├── instance/                 # SQLite (non versionné)
+├── static/app_extras.js      # Sessions, filtres, toasts, sélecteurs
+├── uploads/                  # Dossier de stockage par défaut (non versionné)
+├── logs/                     # run_model_session.log (non versionné)
+├── instance/                 # SQLite + saved_sessions.json (non versionné)
 ├── models/                   # Poids ML (Release GitHub)
 └── start.sh / start.bat / start.ps1
 ```

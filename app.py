@@ -15,9 +15,14 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent
+STORAGE_SETTINGS_PATH = BASE_DIR / "instance" / "storage_settings.json"
+SAVED_SESSIONS_PATH = BASE_DIR / "instance" / "saved_sessions.json"
+STORAGE_HISTORY_PATH = BASE_DIR / "instance" / "storage_history.json"
+DEFAULT_UPLOAD_DIR = BASE_DIR / "uploads"
 load_dotenv(BASE_DIR / ".env")
 sys.path.insert(0, str(BASE_DIR / "scripts"))
 from annotation_store import backup_json_file, file_lock_for, parse_index_range  # noqa: E402
+from native_dialogs import pick_folder, pick_json_file, dialog_capabilities, picker_unavailable_message  # noqa: E402
 from ollama_service import (  # noqa: E402
     ensure_ollama_ready,
     ensure_ollama_ready_async,
@@ -29,7 +34,9 @@ from run_model_job import (  # noqa: E402
     estimate_batch,
     find_resume_index,
     get_job_status,
+    get_session_log_path,
     is_job_running,
+    prepare_session_logs,
     request_cancel_batch,
     start_batch,
 )
@@ -37,6 +44,7 @@ from run_model_job import (  # noqa: E402
 # Lazy loaded models
 sbert_model = None
 cascade_engine = None
+_dialog_lock = threading.Lock()
 
 
 def _format_elapsed(seconds: float) -> str:
@@ -75,11 +83,147 @@ def get_sbert_model():
 app = Flask(__name__)
 app.config['TEMPLATES_AUTO_RELOAD'] = True
 app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{(BASE_DIR / "instance" / "annotations.db").as_posix()}'
-app.config['UPLOAD_FOLDER'] = str(BASE_DIR / 'uploads')
-db = SQLAlchemy(app)
 
-# Ensure required folders exist
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
+def _storage_locked_by_env() -> bool:
+    return bool(os.environ.get("ANNOTATION_DATA_DIR", "").strip())
+
+
+def _load_storage_settings() -> dict:
+    if not STORAGE_SETTINGS_PATH.is_file():
+        return {}
+    try:
+        with open(STORAGE_SETTINGS_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _save_storage_settings(upload_folder: Path) -> None:
+    STORAGE_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(STORAGE_SETTINGS_PATH, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "upload_folder": str(upload_folder),
+                "updated_at": datetime.utcnow().isoformat() + "Z",
+            },
+            f,
+            indent=2,
+        )
+
+
+def _resolve_storage_path(raw: str) -> Path:
+    path = Path(raw.strip()).expanduser()
+    if not path.is_absolute():
+        path = (Path.cwd() / path).resolve()
+    else:
+        path = path.resolve()
+    return path
+
+
+def _default_upload_dir() -> Path:
+    env_path = os.environ.get("ANNOTATION_DATA_DIR", "").strip()
+    if env_path:
+        return _resolve_storage_path(env_path)
+    saved = _load_storage_settings().get("upload_folder", "").strip()
+    if saved:
+        return _resolve_storage_path(saved)
+    return DEFAULT_UPLOAD_DIR.resolve()
+
+
+def _storage_source() -> str:
+    if _storage_locked_by_env():
+        return "env"
+    if _load_storage_settings().get("upload_folder", "").strip():
+        return "settings"
+    return "default"
+
+
+def _load_storage_history() -> list[str]:
+    paths = [str(DEFAULT_UPLOAD_DIR.resolve())]
+    if STORAGE_HISTORY_PATH.is_file():
+        try:
+            with open(STORAGE_HISTORY_PATH, encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                paths.extend(str(p) for p in data if p)
+        except (OSError, json.JSONDecodeError):
+            pass
+    try:
+        current = str(Path(app.config["UPLOAD_FOLDER"]).resolve())
+        paths.append(current)
+    except (KeyError, OSError):
+        pass
+    unique: list[str] = []
+    seen = set()
+    for raw in paths:
+        try:
+            key = str(Path(raw).expanduser().resolve())
+        except OSError:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(key)
+    return unique
+
+
+def _register_storage_folder(path: Path) -> None:
+    try:
+        resolved = str(path.expanduser().resolve())
+    except OSError:
+        return
+    history = []
+    if STORAGE_HISTORY_PATH.is_file():
+        try:
+            with open(STORAGE_HISTORY_PATH, encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                history = [str(p) for p in data if p]
+        except (OSError, json.JSONDecodeError):
+            history = []
+    if resolved not in history:
+        history.insert(0, resolved)
+    STORAGE_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(STORAGE_HISTORY_PATH, "w", encoding="utf-8") as f:
+        json.dump(history[:50], f, indent=2)
+
+
+def _set_upload_folder(raw: str) -> Path:
+    old = app.config.get("UPLOAD_FOLDER")
+    path = _resolve_storage_path(raw)
+    if path.exists() and not path.is_dir():
+        raise ValueError("Path exists but is not a folder.")
+    path.mkdir(parents=True, exist_ok=True)
+    test_file = path / ".write_test"
+    try:
+        test_file.write_text("ok", encoding="utf-8")
+        test_file.unlink()
+    except OSError as exc:
+        raise ValueError(f"Folder is not writable: {exc}") from exc
+    (path / "backups").mkdir(parents=True, exist_ok=True)
+    app.config["UPLOAD_FOLDER"] = str(path)
+    if not _storage_locked_by_env():
+        _save_storage_settings(path)
+    _register_storage_folder(path)
+    if old:
+        _register_storage_folder(Path(old))
+    return path
+
+
+def _init_upload_folder() -> Path:
+    path = _default_upload_dir()
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "backups").mkdir(parents=True, exist_ok=True)
+    app.config["UPLOAD_FOLDER"] = str(path)
+    _register_storage_folder(path)
+    _register_storage_folder(DEFAULT_UPLOAD_DIR)
+    return path
+
+
+_init_upload_folder()
+db = SQLAlchemy(app)
 os.makedirs(BASE_DIR / 'instance', exist_ok=True)
 os.makedirs('static', exist_ok=True)
 os.makedirs('logs', exist_ok=True)
@@ -252,7 +396,8 @@ def _load_cascade_config() -> dict:
     return load_config()
 
 
-# Au démarrage : installer/démarrer Ollama et télécharger le LLM en arrière-plan.
+# Start Ollama + LLM in background; fresh Run Model log for this server session.
+prepare_session_logs(BASE_DIR / "logs")
 ensure_ollama_ready_async(_load_cascade_config(), BASE_DIR / "cascade" / "config.json")
 
 @app.route('/')
@@ -293,6 +438,39 @@ def api_system_check():
     """Alias explicite pour la vérification machine (même payload que /api/status)."""
     return api_status()
 
+
+def _save_json_to_upload_folder(raw: str, safe_name: str) -> str:
+    upload_path = os.path.join(app.config['UPLOAD_FOLDER'], safe_name)
+    lock = file_lock_for(upload_path)
+    with lock:
+        with open(upload_path, 'w', encoding='utf-8') as f:
+            f.write(raw)
+    return upload_path
+
+
+def _import_json_payload(raw: str, safe_name: str, source_path: Path | None = None) -> dict:
+    raw = raw.replace(': NaN', ': null')
+    data = json.loads(raw)
+    if source_path is not None:
+        _set_current_session(source_path)
+        safe_name = source_path.name
+    else:
+        upload_path = Path(app.config['UPLOAD_FOLDER']) / safe_name
+        _set_current_session(upload_path)
+    if isinstance(data, dict):
+        data = [data]
+    sync_file_annotations(safe_name, data, source='import')
+    db.session.commit()
+    data = enrich_data_with_status(safe_name, data)
+    processed_ids = get_processed_ids_for_file(safe_name)
+    return {
+        'data': data,
+        'processed_ids': list(processed_ids),
+        'filename': safe_name,
+        'path': app.config.get('current_file_path'),
+    }
+
+
 @app.route('/upload', methods=['POST'])
 def upload_file():
     if 'file' not in request.files:
@@ -305,29 +483,38 @@ def upload_file():
             safe_name = secure_filename(file.filename) or 'upload.json'
             file.seek(0)
             raw = file.read().decode('utf-8')
-            upload_path = os.path.join(app.config['UPLOAD_FOLDER'], safe_name)
-            lock = file_lock_for(upload_path)
-            with lock:
-                with open(upload_path, 'w', encoding='utf-8') as f:
-                    f.write(raw)
-            raw = raw.replace(': NaN', ': null')
-            data = json.loads(raw)
-            app.config['current_filename'] = safe_name
-            # If the file is a dict, wrap it in a list for uniformity
-            if isinstance(data, dict):
-                data = [data]
-            sync_file_annotations(safe_name, data, source='import')
-            db.session.commit()
-            data = enrich_data_with_status(safe_name, data)
-            processed_ids = get_processed_ids_for_file(safe_name)
-            return jsonify({
-                'data': data,
-                'processed_ids': list(processed_ids),
-                'filename': safe_name,
-            })
+            _save_json_to_upload_folder(raw, safe_name)
+            return jsonify(_import_json_payload(raw, safe_name))
         except Exception as e:
             return jsonify({'error': f'Invalid JSON file: {str(e)}'}), 400
     return jsonify({'error': 'Invalid file type'}), 400
+
+
+@app.route('/api/upload/pick', methods=['POST'])
+def api_upload_pick():
+    if is_job_running():
+        return jsonify({'error': 'Cannot load a file while Run Model is running.'}), 409
+    if not _dialog_lock.acquire(blocking=False):
+        return jsonify({'error': 'A system dialog is already open.'}), 409
+    try:
+        picked = pick_json_file(app.config['UPLOAD_FOLDER'])
+    finally:
+        _dialog_lock.release()
+    if not picked:
+        reason = picker_unavailable_message()
+        if reason:
+            return jsonify({'error': reason, 'dialog_unavailable': True}), 503
+        return jsonify({'cancelled': True})
+    source = Path(picked)
+    if source.suffix.lower() != '.json':
+        return jsonify({'error': 'Please choose a .json file.'}), 400
+    try:
+        raw = source.read_text(encoding='utf-8')
+        safe_name = secure_filename(source.name) or 'upload.json'
+        return jsonify(_import_json_payload(raw, safe_name, source_path=source.resolve()))
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': f'Invalid JSON file: {e}'}), 400
 
 @app.route('/resume', methods=['GET'])
 def resume_session():
@@ -356,20 +543,14 @@ def resume_session():
 
 @app.route('/download', methods=['GET'])
 def download_file():
-    original_filename = app.config.get('current_filename')
-    if not original_filename:
-        upload_dir = app.config['UPLOAD_FOLDER']
-        files = [f for f in os.listdir(upload_dir) if f.endswith('.json')]
-        if files:
-            files.sort(key=lambda x: os.path.getmtime(os.path.join(upload_dir, x)), reverse=True)
-            original_filename = files[0]
-            app.config['current_filename'] = original_filename
-            
-    if not original_filename:
+    file_path = _resolve_current_file_path()
+    if not file_path:
         return jsonify({'error': 'No file to download'}), 400
-        
-    file_path = os.path.join(app.config['UPLOAD_FOLDER'], original_filename)
-    return send_file(file_path, as_attachment=True, download_name=f"annotated_{original_filename}")
+    return send_file(
+        file_path,
+        as_attachment=True,
+        download_name=f"annotated_{file_path.name}",
+    )
 
 @app.route('/save_annotation', methods=['POST'])
 def save_annotation():
@@ -382,23 +563,10 @@ def save_annotation():
     if not isinstance(annotation, list):
         return jsonify({'error': 'Invalid annotation (expected a list).'}), 400
     
-    # Get the original filename, recovering from server reload if necessary
-    original_filename = app.config.get('current_filename')
-    if not original_filename:
-        upload_dir = app.config['UPLOAD_FOLDER']
-        files = [f for f in os.listdir(upload_dir) if f.endswith('.json')]
-        if files:
-            files.sort(key=lambda x: os.path.getmtime(os.path.join(upload_dir, x)), reverse=True)
-            original_filename = files[0]
-            app.config['current_filename'] = original_filename
-            
-    if not original_filename:
-        return jsonify({'error': 'Original file not found. Please re-upload your file.'}), 400
-        
-    file_path = os.path.join(app.config['UPLOAD_FOLDER'], original_filename)
-    if not os.path.exists(file_path):
-        return jsonify({'error': 'Original file not found'}), 400
-        
+    file_path = _resolve_current_file_path()
+    if not file_path:
+        return jsonify({'error': 'Original file not found. Please load a JSON file.'}), 400
+    original_filename = file_path.name
     # Load the file
     with open(file_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
@@ -452,6 +620,183 @@ def clear_database():
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
 
+def _load_saved_sessions_registry() -> list[dict]:
+    SAVED_SESSIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    sessions: list[dict] = []
+    if SAVED_SESSIONS_PATH.is_file():
+        try:
+            with open(SAVED_SESSIONS_PATH, encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                sessions = [s for s in data if isinstance(s, dict) and s.get("path")]
+        except (OSError, json.JSONDecodeError):
+            sessions = []
+    legacy_path = BASE_DIR / "instance" / "known_sessions.json"
+    if legacy_path.is_file():
+        try:
+            with open(legacy_path, encoding="utf-8") as f:
+                legacy = json.load(f)
+            if isinstance(legacy, list):
+                for raw in legacy:
+                    if raw:
+                        sessions.append({"path": str(raw)})
+        except (OSError, json.JSONDecodeError):
+            pass
+        if sessions:
+            _save_saved_sessions_registry(sessions)
+            try:
+                legacy_path.unlink()
+            except OSError:
+                pass
+    return sessions
+
+
+def _save_saved_sessions_registry(sessions: list[dict]) -> None:
+    SAVED_SESSIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    unique: list[dict] = []
+    seen: set[str] = set()
+    for session in sessions:
+        raw = session.get("path")
+        if not raw:
+            continue
+        try:
+            key = str(Path(raw).expanduser().resolve())
+        except OSError:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(session)
+    with open(SAVED_SESSIONS_PATH, "w", encoding="utf-8") as f:
+        json.dump(unique[:500], f, indent=2)
+
+
+def _session_record(path: Path) -> dict | None:
+    try:
+        resolved = path.expanduser().resolve()
+        stat = resolved.stat()
+    except OSError:
+        return None
+    if not resolved.is_file() or resolved.suffix.lower() != ".json":
+        return None
+    return {
+        "path": str(resolved),
+        "filename": resolved.name,
+        "parent": str(resolved.parent),
+        "last_used": datetime.utcnow().isoformat() + "Z",
+        "mtime": stat.st_mtime,
+        "size_mb": round(stat.st_size / (1024 * 1024), 2),
+    }
+
+
+def _register_saved_session(path: Path) -> None:
+    entry = _session_record(path)
+    if not entry:
+        return
+    sessions = _load_saved_sessions_registry()
+    kept = [s for s in sessions if s.get("path") != entry["path"]]
+    kept.insert(0, entry)
+    _save_saved_sessions_registry(kept[:500])
+
+
+def _list_saved_sessions() -> list[dict]:
+    sessions = _load_saved_sessions_registry()
+    out: list[dict] = []
+    seen: set[str] = set()
+    for session in sessions:
+        raw = session.get("path")
+        if not raw:
+            continue
+        try:
+            path = Path(raw).expanduser().resolve()
+            key = str(path)
+        except OSError:
+            continue
+        if key in seen or not path.is_file():
+            continue
+        seen.add(key)
+        fresh = _session_record(path)
+        if fresh:
+            fresh["last_used"] = session.get("last_used") or fresh["last_used"]
+            out.append(fresh)
+    out.sort(key=lambda s: s.get("last_used", ""), reverse=True)
+    return out
+
+
+def _remove_saved_session(path: Path) -> None:
+    try:
+        target = str(path.expanduser().resolve())
+    except OSError:
+        return
+    kept = [s for s in _load_saved_sessions_registry() if s.get("path") != target]
+    _save_saved_sessions_registry(kept)
+
+
+def _set_current_session(file_path: Path) -> str:
+    resolved = file_path.expanduser().resolve()
+    app.config["current_filename"] = resolved.name
+    app.config["current_file_path"] = str(resolved)
+    _register_saved_session(resolved)
+    return resolved.name
+
+
+def _clear_current_session() -> None:
+    app.config["current_filename"] = None
+    app.config.pop("current_file_path", None)
+
+
+def _resolve_session_path(filename: str = "", path: str = "") -> Path | None:
+    raw_path = (path or "").strip()
+    if raw_path:
+        try:
+            candidate = Path(raw_path).expanduser().resolve()
+        except OSError:
+            return None
+        if candidate.is_file() and candidate.suffix.lower() == ".json":
+            return candidate
+    safe = _safe_upload_path(filename)
+    if safe:
+        return safe
+    current = app.config.get("current_file_path")
+    if current and filename and Path(current).name == Path(filename).name:
+        try:
+            candidate = Path(current).expanduser().resolve()
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            pass
+    if not filename:
+        return None
+    name = Path(filename).name
+    for session in _list_saved_sessions():
+        if session.get("filename") == name:
+            try:
+                candidate = Path(session["path"]).resolve()
+                if candidate.is_file():
+                    return candidate
+            except OSError:
+                continue
+    return None
+
+
+def _resolve_current_file_path() -> Path | None:
+    explicit = app.config.get("current_file_path")
+    if explicit:
+        try:
+            candidate = Path(explicit).expanduser().resolve()
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            pass
+    filename = app.config.get("current_filename")
+    if filename:
+        upload_candidate = Path(app.config["UPLOAD_FOLDER"]) / filename
+        if upload_candidate.is_file():
+            return upload_candidate.resolve()
+        return _resolve_session_path(filename=filename)
+    return None
+
+
 def _safe_upload_path(filename: str) -> Path | None:
     """Chemin JSON dans uploads/ sans alterer le nom (espaces, parentheses)."""
     if not filename or not isinstance(filename, str):
@@ -469,51 +814,151 @@ def _safe_upload_path(filename: str) -> Path | None:
 
 
 def _resolve_current_filename() -> str | None:
-    original_filename = app.config.get('current_filename')
-    if not original_filename:
-        upload_dir = app.config['UPLOAD_FOLDER']
-        files = [f for f in os.listdir(upload_dir) if f.endswith('.json')]
-        if files:
-            files.sort(key=lambda x: os.path.getmtime(os.path.join(upload_dir, x)), reverse=True)
-            original_filename = files[0]
-            app.config['current_filename'] = original_filename
-    return original_filename
+    file_path = _resolve_current_file_path()
+    if file_path:
+        return file_path.name
+    upload_dir = app.config['UPLOAD_FOLDER']
+    if not os.path.isdir(upload_dir):
+        return None
+    files = [f for f in os.listdir(upload_dir) if f.endswith('.json')]
+    if files:
+        files.sort(key=lambda x: os.path.getmtime(os.path.join(upload_dir, x)), reverse=True)
+        latest = files[0]
+        app.config['current_filename'] = latest
+        app.config['current_file_path'] = str(Path(upload_dir) / latest)
+        return latest
+    return None
 
 
-def _load_upload_data(filename: str) -> tuple[list, Path]:
-    file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+def _load_upload_data(filename: str | None = None) -> tuple[list, Path]:
+    file_path = _resolve_current_file_path()
+    if file_path is None and filename:
+        file_path = _resolve_session_path(filename=filename)
+    if file_path is None:
+        raise FileNotFoundError("No JSON file loaded.")
     with open(file_path, encoding='utf-8') as f:
         data = json.load(f)
     if isinstance(data, dict):
         data = [data]
-    return data, Path(file_path)
+    _set_current_session(file_path)
+    return data, file_path
+
+
+@app.route('/api/dialogs/capabilities')
+def api_dialog_capabilities():
+    return jsonify(dialog_capabilities())
+
+
+@app.route('/api/storage')
+def api_storage_get():
+    folder = Path(app.config['UPLOAD_FOLDER']).resolve()
+    return jsonify({
+        'path': str(folder),
+        'default_path': str(DEFAULT_UPLOAD_DIR.resolve()),
+        'home_path': str(Path.home().resolve()),
+        'writable': os.access(folder, os.W_OK),
+        'source': _storage_source(),
+        'locked': _storage_locked_by_env(),
+    })
+
+
+@app.route('/api/storage/pick', methods=['POST'])
+def api_storage_pick():
+    if is_job_running():
+        return jsonify({'error': 'Cannot change storage folder while Run Model is running.'}), 409
+    if _storage_locked_by_env():
+        return jsonify({
+            'error': 'Storage folder is locked by ANNOTATION_DATA_DIR in .env.',
+            'locked': True,
+        }), 403
+    if not _dialog_lock.acquire(blocking=False):
+        return jsonify({'error': 'A system dialog is already open.'}), 409
+    try:
+        picked = pick_folder(app.config['UPLOAD_FOLDER'])
+    finally:
+        _dialog_lock.release()
+    if not picked:
+        reason = picker_unavailable_message()
+        if reason:
+            return jsonify({'error': reason, 'dialog_unavailable': True}), 503
+        return jsonify({'cancelled': True})
+    try:
+        folder = _set_upload_folder(picked)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    app.config['current_filename'] = None
+    app.config.pop('current_file_path', None)
+    return jsonify({
+        'ok': True,
+        'path': str(folder),
+        'cancelled': False,
+        'message': f'Storage folder: {folder}',
+    })
+
+
+@app.route('/api/storage', methods=['POST'])
+def api_storage_set():
+    if is_job_running():
+        return jsonify({'error': 'Cannot change storage folder while Run Model is running.'}), 409
+    if _storage_locked_by_env():
+        return jsonify({
+            'error': 'Storage folder is fixed by ANNOTATION_DATA_DIR in .env.',
+            'path': app.config['UPLOAD_FOLDER'],
+            'locked': True,
+        }), 403
+    req = request.json or {}
+    raw = (req.get('path') or '').strip()
+    if not raw:
+        return jsonify({'error': 'Missing folder path.'}), 400
+    try:
+        folder = _set_upload_folder(raw)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    app.config['current_filename'] = None
+    app.config.pop('current_file_path', None)
+    return jsonify({
+        'ok': True,
+        'path': str(folder),
+        'message': f'Storage folder updated: {folder}',
+        'source': _storage_source(),
+    })
 
 
 @app.route('/api/sessions')
 def api_sessions():
-    upload_dir = Path(app.config['UPLOAD_FOLDER'])
-    sessions = []
-    for path in upload_dir.glob('*.json'):
-        sessions.append({
-            'filename': path.name,
-            'mtime': path.stat().st_mtime,
-            'size_mb': round(path.stat().st_size / (1024 * 1024), 2),
-        })
-    sessions.sort(key=lambda s: s['mtime'], reverse=True)
+    storage_dir = Path(app.config['UPLOAD_FOLDER']).resolve()
+    current_file = _resolve_current_file_path()
+    if current_file:
+        _register_saved_session(current_file)
+    sessions = _list_saved_sessions()
+    current_path = app.config.get('current_file_path')
+    current_name = app.config.get('current_filename')
+    for session in sessions:
+        try:
+            session['in_storage_folder'] = (
+                Path(session['path']).resolve().parent == storage_dir
+            )
+        except OSError:
+            session['in_storage_folder'] = False
     return jsonify({
         'sessions': sessions,
-        'current': app.config.get('current_filename'),
+        'current': current_name,
+        'current_path': current_path,
+        'storage_folder': str(storage_dir),
+        'scope': 'saved',
     })
 
 
 @app.route('/api/sessions/load', methods=['POST'])
 def api_load_session():
     req = request.json or {}
-    file_path = _safe_upload_path(req.get('filename', ''))
+    file_path = _resolve_session_path(
+        filename=req.get('filename', ''),
+        path=req.get('path', ''),
+    )
     if not file_path:
         return jsonify({'error': 'File not found.'}), 404
-    filename = file_path.name
-    app.config['current_filename'] = filename
+    filename = _set_current_session(file_path)
     with open(file_path, encoding='utf-8') as f:
         data = json.load(f)
     if isinstance(data, dict):
@@ -526,31 +971,71 @@ def api_load_session():
         'data': data,
         'processed_ids': list(processed_ids),
         'filename': filename,
+        'path': str(file_path),
     })
 
 
 @app.route('/api/sessions/delete', methods=['POST'])
 def api_delete_session():
     if is_job_running():
-        return jsonify({'error': 'Cannot delete while Run Model is running.'}), 409
+        return jsonify({'error': 'Cannot remove session while Run Model is running.'}), 409
     req = request.json or {}
-    requested = req.get('filename', '')
-    file_path = _safe_upload_path(requested)
-    filename = Path(requested).name if requested else ''
-    if not filename or not filename.endswith('.json'):
-        return jsonify({'error': 'Invalid filename.'}), 400
+    mode = (req.get('mode') or 'list').strip().lower()
+    if mode not in ('list', 'disk'):
+        return jsonify({'error': 'Invalid mode. Use "list" or "disk".'}), 400
+    raw_path = (req.get('path') or '').strip()
+    filename = Path(req.get('filename', '') or '').name
+    target_path = ''
+    file_path: Path | None = None
+    if raw_path:
+        try:
+            target_path = str(Path(raw_path).expanduser().resolve())
+            file_path = Path(target_path)
+        except OSError:
+            target_path = raw_path
+    elif filename:
+        file_path = _resolve_session_path(filename=filename, path='')
+        if file_path:
+            target_path = str(file_path.resolve())
+    if not target_path:
+        return jsonify({'error': 'Session not found.'}), 404
+
+    registry = _load_saved_sessions_registry()
+    if not any(s.get('path') == target_path for s in registry):
+        return jsonify({'error': 'Session not in saved list.'}), 404
+
+    if mode == 'list':
+        _remove_saved_session(Path(target_path))
+        if app.config.get('current_file_path') == target_path:
+            _clear_current_session()
+        elif filename and app.config.get('current_filename') == filename:
+            _clear_current_session()
+        label = filename or Path(target_path).name
+        return jsonify({
+            'ok': True,
+            'mode': 'list',
+            'message': f'Retiré de la liste : {label} (fichier conservé sur l\'ordinateur)',
+        })
+
+    if not file_path or not file_path.is_file():
+        return jsonify({'error': 'File not found on disk.'}), 404
     try:
-        ReferenceAnnotation.query.filter_by(filename=filename).delete()
-        TargetAnnotation.query.filter_by(filename=filename).delete()
-        AnnotationFile.query.filter_by(filename=filename).delete()
-        if file_path:
-            file_path.unlink()
-        if app.config.get('current_filename') == filename:
-            app.config['current_filename'] = None
+        ReferenceAnnotation.query.filter_by(filename=filename or file_path.name).delete()
+        TargetAnnotation.query.filter_by(filename=filename or file_path.name).delete()
+        AnnotationFile.query.filter_by(filename=filename or file_path.name).delete()
+        file_path.unlink()
+        _remove_saved_session(file_path)
+        if app.config.get('current_file_path') == target_path:
+            _clear_current_session()
+        elif filename and app.config.get('current_filename') == filename:
+            _clear_current_session()
         db.session.commit()
-        if file_path:
-            return jsonify({'ok': True, 'message': f'Session deleted: {filename}'})
-        return jsonify({'ok': True, 'message': f'Entry removed (file already gone): {filename}'})
+        label = filename or file_path.name
+        return jsonify({
+            'ok': True,
+            'mode': 'disk',
+            'message': f'Fichier supprimé de l\'ordinateur : {label}',
+        })
     except OSError as e:
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
@@ -577,16 +1062,29 @@ def api_resync():
 @app.route('/api/logs/run_model/latest')
 def api_latest_run_log():
     logs_dir = BASE_DIR / 'logs'
-    if not logs_dir.is_dir():
+    session_path = get_session_log_path()
+    latest = session_path if session_path and session_path.is_file() else None
+    if latest is None and logs_dir.is_dir():
+        files = sorted(
+            logs_dir.glob('run_model_*.log'),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        latest = files[0] if files else None
+    if latest is None:
         return jsonify({'filename': None, 'content': ''})
-    files = sorted(logs_dir.glob('run_model_*.log'), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not files:
-        return jsonify({'filename': None, 'content': ''})
-    latest = files[0]
     content = latest.read_text(encoding='utf-8', errors='replace')
     if len(content) > 12000:
         content = content[-12000:]
     return jsonify({'filename': latest.name, 'content': content})
+
+
+@app.route('/api/logs/clear', methods=['POST'])
+def api_clear_logs():
+    if is_job_running():
+        return jsonify({'error': 'Cannot clear logs while Run Model is running.'}), 409
+    prepare_session_logs(BASE_DIR / "logs")
+    return jsonify({'ok': True, 'message': 'Run Model logs cleared.'})
 
 
 @app.route('/api/auto_annotate/cancel', methods=['POST'])
@@ -709,6 +1207,7 @@ def auto_annotate():
         return jsonify({"error": msg, "missing_required": missing}), 503
 
     backup_path = backup_json_file(file_path)
+    _register_saved_session(file_path)
     targets_total = sum(
         len(data[idx].get("database") or [])
         for idx in range(start_index, end_index + 1)
@@ -724,6 +1223,7 @@ def auto_annotate():
         base_dir=BASE_DIR,
         targets_total=targets_total,
         force_reannotate=force_reannotate,
+        backup_path=str(backup_path) if backup_path else None,
         app_module=sys.modules[__name__],
     )
     if not started:
@@ -740,4 +1240,4 @@ if __name__ == '__main__':
     host = os.environ.get('FLASK_HOST', '127.0.0.1')
     port = int(os.environ.get('FLASK_PORT', '5000'))
     debug = os.environ.get('FLASK_DEBUG', '0') == '1'
-    app.run(host=host, port=port, debug=debug)
+    app.run(host=host, port=port, debug=debug, threaded=True)

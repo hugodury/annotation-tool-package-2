@@ -1,8 +1,10 @@
-"""Run Model en arrière-plan : progression, logs, sauvegarde incrémentale."""
+"""Run Model background job: progress, logs, incremental save."""
 from __future__ import annotations
 
 import json
 import logging
+import os
+import platform
 import re
 import sys
 import threading
@@ -12,8 +14,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+SESSION_LOG_FILENAME = "run_model_session.log"
+
 _lock = threading.Lock()
 _cancel_requested = False
+_session_log_path: Path | None = None
 _state: dict[str, Any] = {
     "running": False,
     "started_at": None,
@@ -62,15 +67,52 @@ def _finish(result: dict | None = None, error: str | None = None) -> None:
         _cancel_requested = False
 
 
-def _setup_logger(logs_dir: Path) -> logging.Logger:
+def prepare_session_logs(logs_dir: Path) -> Path:
+    """Delete previous Run Model logs and open a fresh log for this server session."""
+    global _session_log_path
     logs_dir.mkdir(parents=True, exist_ok=True)
-    log_path = logs_dir / f"run_model_{datetime.now().strftime('%Y%m%d')}.log"
+    for old in logs_dir.glob("run_model_*.log"):
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    _session_log_path = logs_dir / SESSION_LOG_FILENAME
+    host = os.environ.get("FLASK_HOST", "127.0.0.1")
+    port = os.environ.get("FLASK_PORT", "5000")
+    header = "\n".join(
+        [
+            "=" * 72,
+            f"SESSION START  {datetime.now().isoformat(timespec='seconds')}",
+            f"PID            {os.getpid()}",
+            f"Platform       {platform.system()} {platform.release()} ({platform.machine()})",
+            f"Python         {sys.version.split()[0]}",
+            f"App URL        http://{host}:{port}",
+            f"Log file       {SESSION_LOG_FILENAME}",
+            "=" * 72,
+            "",
+        ]
+    )
+    _session_log_path.write_text(header, encoding="utf-8")
+    return _session_log_path
+
+
+def get_session_log_path() -> Path | None:
+    return _session_log_path
+
+
+def _setup_logger(logs_dir: Path) -> logging.Logger:
+    global _session_log_path
+    if _session_log_path is None:
+        prepare_session_logs(logs_dir)
+    log_path = _session_log_path
     logger = logging.getLogger("run_model")
     logger.setLevel(logging.INFO)
     logger.handlers.clear()
-    fh = logging.FileHandler(log_path, encoding="utf-8")
+    fh = logging.FileHandler(log_path, encoding="utf-8", mode="a")
     fh.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
     logger.addHandler(fh)
+    if not logger.handlers or not any(isinstance(h, logging.StreamHandler) for h in logger.handlers):
+        pass  # file only
     return logger
 
 
@@ -141,6 +183,12 @@ def _route_fractions_from_logs(logs_dir: Path, *, min_samples: int = 24) -> dict
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
+    if not log_files:
+        return None
+    # Current session uses a single log file; read it first.
+    session = logs_dir / SESSION_LOG_FILENAME
+    if session in log_files:
+        log_files = [session] + [p for p in log_files if p != session]
     for path in log_files[:3]:
         try:
             lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
@@ -238,13 +286,19 @@ def _empirical_route_stats(logs_dir: Path, *, min_samples: int = 5) -> dict[str,
     """Durees medianes par route cascade depuis les logs locaux."""
     if not logs_dir.is_dir():
         return None
-    pattern = re.compile(r"route=(\w+).*duree=([\d.]+)s")
+    pattern = re.compile(r"route=(\w+).*(?:duration|duree)=([\d.]+)s")
     buckets: dict[str, list[float]] = {}
     log_files = sorted(
         logs_dir.glob("run_model_*.log"),
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
+    if not log_files:
+        return None
+    # Current session uses a single log file; read it first.
+    session = logs_dir / SESSION_LOG_FILENAME
+    if session in log_files:
+        log_files = [session] + [p for p in log_files if p != session]
     for path in log_files[:3]:
         try:
             lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
@@ -528,12 +582,43 @@ def request_cancel_batch() -> bool:
             return False
         _cancel_requested = True
         _state["progress"]["message"] = "Cancellation requested…"
-        return True
+    try:
+        logging.getLogger("run_model").info("CANCEL requested by user — stopping batch")
+    except Exception:
+        pass
+    return True
 
 
 def _cancelled() -> bool:
     with _lock:
         return _cancel_requested
+
+
+def _run_cancellable(work: Callable[[], Any], should_cancel: Callable[[], bool], poll: float = 0.2) -> Any:
+    """Run blocking ML work in a side thread; raise when cancel is requested."""
+    from cascade.core import BatchCancelledError
+
+    if not should_cancel:
+        return work()
+
+    holder: dict[str, Any] = {}
+    errors: list[BaseException] = []
+
+    def _worker() -> None:
+        try:
+            holder["result"] = work()
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+    while thread.is_alive():
+        if should_cancel():
+            raise BatchCancelledError("Batch cancelled by user.")
+        thread.join(poll)
+    if errors:
+        raise errors[0]
+    return holder["result"]
 
 
 def start_batch(
@@ -547,6 +632,7 @@ def start_batch(
     base_dir: Path,
     targets_total: int | None = None,
     force_reannotate: bool = False,
+    backup_path: str | None = None,
     app_module=None,
 ) -> bool:
     if app_module is None:
@@ -582,6 +668,7 @@ def start_batch(
             file_path,
             base_dir,
             force_reannotate,
+            backup_path,
         ),
         daemon=True,
     )
@@ -599,6 +686,7 @@ def _run_batch(
     file_path: Path,
     base_dir: Path,
     force_reannotate: bool = False,
+    backup_path: str | None = None,
 ) -> None:
     import numpy as np
 
@@ -614,6 +702,7 @@ def _run_batch(
                 base_dir,
                 np,
                 force_reannotate=force_reannotate,
+                backup_path=backup_path,
             )
     except Exception as e:
         logging.getLogger("run_model").exception("Erreur fatale batch: %s", e)
@@ -631,12 +720,13 @@ def _run_batch_inner(
     np,
     *,
     force_reannotate: bool = False,
+    backup_path: str | None = None,
 ) -> None:
     from annotation_store import file_lock_for
 
     file_lock = file_lock_for(file_path)
     if not file_lock.acquire(blocking=False):
-        _finish(error="Fichier verrouille — un autre traitement est en cours.")
+        _finish(error="File locked — another process is using this JSON.")
         return
 
     logger = _setup_logger(base_dir / "logs")
@@ -652,6 +742,7 @@ def _run_batch_inner(
 
         report = app_mod.build_report(base_dir, cfg)
         is_cpu = report.get("hardware", {}).get("gpu", {}).get("device") == "cpu"
+        hw_label = report.get("hardware", {}).get("gpu", {}).get("label", "CPU")
         cfg = effective_run_config(cfg, is_cpu)
 
         no_annotation_timeout = int(run_cfg.get("no_annotation_timeout", 360))
@@ -677,19 +768,23 @@ def _run_batch_inner(
             except BaseException as e:
                 load_errors.append(e)
 
+        load_start = time.monotonic()
         loader = threading.Thread(target=_load_models, daemon=True)
         loader.start()
         while loader.is_alive():
             if _cancelled():
-                logger.info("Batch annule pendant chargement des modeles")
+                logger.info("Batch cancelled during model loading")
                 _finish(error="Batch cancelled.")
                 return
-            loader.join(0.5)
+            loader.join(0.2)
 
         if load_errors:
-            logger.error("Echec chargement modeles: %s", load_errors[0])
+            logger.error("Model loading failed: %s", load_errors[0])
             _finish(error=str(load_errors[0]))
             return
+
+        load_sec = round(time.monotonic() - load_start, 1)
+        logger.info("Models loaded in %ss (%s)", load_sec, hw_label)
 
         engine = load_box["engine"]
         sbert = load_box["sbert"]
@@ -705,13 +800,16 @@ def _run_batch_inner(
         )
         _set_progress(targets_total=targets_total, message="Annotation in progress…")
         logger.info(
-            "DEBUT batch %s indices %s-%s (%s refs, %s cibles, force=%s)",
+            "BATCH START file=%s indices=%s-%s refs=%s targets=%s threshold=%.3f "
+            "force_reannotate=%s backup=%s",
             original_filename,
             start_index,
             end_index,
             end_index - start_index + 1,
             targets_total,
+            threshold,
             force_reannotate,
+            backup_path or "none",
         )
 
         targets_annotated_count = 0
@@ -751,7 +849,7 @@ def _run_batch_inner(
                     start_index=start_index,
                     end_index=end_index,
                 ),
-                error="Batch annule.",
+                error="Batch cancelled.",
             )
             return True
 
@@ -806,6 +904,12 @@ def _run_batch_inner(
                 ):
                     pairs_evaluated += 1
                     _set_progress(targets_done=pairs_evaluated)
+                    logger.info(
+                        "SKIP ref_index=%s target=%s/%s (already annotated)",
+                        idx,
+                        i + 1,
+                        len(targets),
+                    )
                     continue
 
                 if force_reannotate:
@@ -818,7 +922,7 @@ def _run_batch_inner(
                 ):
                     save_checkpoint()
                     elapsed = _format_elapsed(time.monotonic() - batch_start)
-                    logger.error("Timeout zero annotation apres %ss", no_annotation_timeout)
+                    logger.error("Timeout: zero targets annotated after %ss", no_annotation_timeout)
                     _finish(
                         result=_partial_result(
                             app_mod,
@@ -830,12 +934,12 @@ def _run_batch_inner(
                             routing_stats,
                             elapsed,
                             partial_error=(
-                                f"Aucune annotation apres {no_annotation_timeout}s."
+                                f"No target annotated after {no_annotation_timeout}s."
                             ),
                             start_index=start_index,
                             end_index=end_index,
                         ),
-                        error=f"Aucune annotation apres {no_annotation_timeout}s.",
+                        error=f"No target annotated after {no_annotation_timeout}s.",
                     )
                     return
 
@@ -851,8 +955,10 @@ def _run_batch_inner(
                     ),
                 )
                 logger.info(
-                    "debut cible ref=%s pair=%s/%s",
+                    "TARGET START ref_index=%s ref=%s/%s target=%s/%s",
                     idx,
+                    ref_num,
+                    end_index - start_index + 1,
                     i + 1,
                     len(targets),
                 )
@@ -873,7 +979,7 @@ def _run_batch_inner(
                     )
                 except BatchCancelledError:
                     logger.info(
-                        "Batch annule pendant cible ref=%s pair=%s/%s",
+                        "Batch cancelled at ref_index=%s target=%s/%s",
                         idx,
                         i + 1,
                         len(targets),
@@ -897,8 +1003,24 @@ def _run_batch_inner(
                     else:
                         if _abort_cancelled():
                             return
-                        emb_anchor = sbert.encode([anchor_text], show_progress_bar=False)[0]
-                        emb_target = sbert.encode([target_text], show_progress_bar=False)[0]
+                        try:
+                            embs = _run_cancellable(
+                                lambda: sbert.encode(
+                                    [anchor_text, target_text],
+                                    show_progress_bar=False,
+                                ),
+                                _cancelled,
+                            )
+                        except BatchCancelledError:
+                            logger.info(
+                                "Batch cancelled during SBERT encoding ref_index=%s target=%s/%s",
+                                idx,
+                                i + 1,
+                                len(targets),
+                            )
+                            _abort_cancelled()
+                            return
+                        emb_anchor, emb_target = embs[0], embs[1]
                         sim = np.dot(emb_anchor, emb_target) / (
                             np.linalg.norm(emb_anchor) * np.linalg.norm(emb_target)
                         )
@@ -917,16 +1039,27 @@ def _run_batch_inner(
 
                 pair_sec = round(time.monotonic() - pair_start, 2)
                 pairs_evaluated += 1
+                related = target.get("related")
+                sim = target.get("similarity_annotation")
+                extra = ""
+                if out.get("llm_error"):
+                    extra += f" llm_error={out.get('llm_error')}"
+                if out.get("llm_pred") is not None:
+                    extra += f" llm_pred={out.get('llm_pred')}"
                 logger.info(
-                    "ref=%s idx=%s/%s route=%s pair=%s/%s duree=%ss%s",
+                    "TARGET DONE ref_index=%s ref=%s/%s target=%s/%s route=%s "
+                    "duration=%ss related=%s sim=%s conf=%s%s",
                     idx,
                     ref_num,
                     end_index - start_index + 1,
-                    route_name,
                     i + 1,
                     len(targets),
+                    route_name,
                     pair_sec,
-                    f" llm_error={out.get('llm_error')}" if out.get("llm_error") else "",
+                    related,
+                    sim,
+                    target.get("model_confidence"),
+                    extra,
                 )
                 _set_progress(
                     targets_done=pairs_evaluated,
@@ -943,7 +1076,7 @@ def _run_batch_inner(
 
             if refs_processed_in_batch % save_every == 0:
                 save_checkpoint()
-                logger.info("Checkpoint JSON+DB apres ref index %s", idx)
+                logger.info("CHECKPOINT saved after ref_index=%s", idx)
 
         save_checkpoint()
         data = app_mod.enrich_data_with_status(original_filename, data)
@@ -963,10 +1096,14 @@ def _run_batch_inner(
             references_in_batch=end_index - start_index + 1,
         )
         logger.info(
-            "FIN batch %s/%s cibles, duree %s",
+            "BATCH END file=%s annotated=%s/%s refs_fully_done=%s duration=%s "
+            "routes=%s",
+            original_filename,
             targets_annotated_count,
             total_targets_evaluated,
+            references_fully_annotated_count,
             elapsed,
+            routing_stats,
         )
         _finish(
             result={

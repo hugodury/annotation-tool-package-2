@@ -416,6 +416,7 @@
             min-width: 280px;
         }
         #activeFileLabel { font-size: 0.9rem; color: #495057; }
+        #storageFolderHint { font-size: 0.78rem; line-height: 1.35; }
         #corpusStats {
             font-size: 0.88rem;
             color: #495057;
@@ -468,6 +469,7 @@
             font-size: 0.85rem;
             cursor: pointer;
         }
+        .session-list .session-load small { font-size: 0.72rem; display: block; }
         .session-list .session-delete {
             color: #dc3545;
             border: none;
@@ -488,6 +490,30 @@
 </head>
 <body>
     <div id="toastHost" aria-live="polite"></div>
+    <div class="modal fade" id="sessionRemoveModal" tabindex="-1" aria-labelledby="sessionRemoveModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="sessionRemoveModalLabel">Supprimer cette session ?</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fermer"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="mb-2"><strong id="sessionRemoveFilename"></strong></p>
+                    <p class="small text-muted mb-3" id="sessionRemovePath"></p>
+                    <p class="mb-0">Que souhaitez-vous faire ?</p>
+                    <ul class="small text-muted mb-0 mt-2">
+                        <li><strong>Liste seulement</strong> — retire l’entrée, le fichier JSON reste sur l’ordinateur</li>
+                        <li><strong>Ordinateur</strong> — supprime définitivement le fichier du disque</li>
+                    </ul>
+                </div>
+                <div class="modal-footer flex-wrap">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Annuler</button>
+                    <button type="button" class="btn btn-primary" id="sessionRemoveListBtn">Liste seulement</button>
+                    <button type="button" class="btn btn-danger" id="sessionRemoveDiskBtn">Supprimer de l'ordinateur</button>
+                </div>
+            </div>
+        </div>
+    </div>
     <div class="loading-overlay" id="loadingOverlay">
         <div class="spinner-border text-primary" role="status" style="width: 3rem; height: 3rem;">
             <span class="visually-hidden">Loading...</span>
@@ -536,22 +562,36 @@
                         <div id="configMissingActions" class="config-missing-actions" style="display:none;"></div>
                     </div>
                     <h5 class="mb-3">1. Load &amp; manage</h5>
+                    <div class="mb-3">
+                        <label class="form-label small mb-1" for="storageFolderInput">Storage folder (annotated JSON)</label>
+                        <div class="input-group input-group-sm">
+                            <input type="text" class="form-control font-monospace" id="storageFolderInput"
+                                   placeholder="Choose a folder…" spellcheck="false" readonly>
+                            <button type="button" class="btn btn-outline-secondary" id="btnBrowseStorage" title="Open folder picker">
+                                <i class="fas fa-folder-open me-1"></i>Browse
+                            </button>
+                        </div>
+                        <small id="storageFolderHint" class="text-muted d-block mt-1">
+                            Sélecteur système natif (Linux, Windows, macOS).
+                        </small>
+                    </div>
                     <div id="activeFileLabel" class="mb-2">Active file: —</div>
                     <div class="mb-2">
-                        <label class="form-label small mb-1">Saved sessions</label>
+                        <label class="form-label small mb-1 saved-sessions-label" id="savedSessionsLabel" title="">Saved sessions</label>
                         <div id="sessionList" class="session-list mb-1"></div>
                         <select id="sessionSelect" class="form-select form-select-sm d-none" aria-hidden="true"></select>
                     </div>
-                    <form id="uploadForm" class="mb-3">
-                        <div class="input-group">
-                            <input type="file" class="form-control" id="jsonFile" accept=".json">
-                            <button type="submit" class="btn btn-primary">Upload</button>
-                        </div>
-                    </form>
+                    <div class="mb-3">
+                        <button type="button" id="btnChooseJsonFile" class="btn btn-primary w-100">
+                            <i class="fas fa-file-import me-1"></i>Choose JSON file
+                        </button>
+                        <small class="text-muted d-block mt-1">Opens your system file picker (Linux, Windows, macOS).</small>
+                    </div>
                     <div class="d-flex gap-2 mt-2 flex-wrap">
                         <button id="downloadFile" class="btn btn-success btn-sm w-100"><i class="fas fa-download me-1"></i>Download JSON</button>
                     </div>
-                    <button id="clearDatabase" class="btn clear-button btn-sm mt-3 w-100" title="Clears SQLite processing history only — JSON files in uploads/ are kept">Clear processing cache (SQLite)</button>
+                    <button id="clearDatabase" class="btn clear-button btn-sm mt-3 w-100" title="Clears SQLite processing history only — JSON files are kept">Clear processing cache (SQLite)</button>
+                    <button id="clearLogs" class="btn btn-outline-secondary btn-sm mt-2 w-100" title="Delete Run Model log file for this server session">Clear Run Model logs</button>
                 </div>
             </div>
             <div class="col-md-7">
@@ -638,6 +678,7 @@
         let systemReport = null;
         let annotationTimerInterval = null;
         let runModelPollInterval = null;
+        let runModelPollFast = false;
         let runModelBusy = false;
 
         function formatDuration(totalSeconds) {
@@ -805,6 +846,7 @@
                 clearInterval(runModelPollInterval);
                 runModelPollInterval = null;
             }
+            runModelPollFast = false;
         }
 
         async function pollRunModelStatus() {
@@ -825,7 +867,13 @@
                     updateRunProgress(st.progress, true);
                     if (st.cancel_requested) {
                         const msgEl = document.getElementById('runProgressMessage');
-                        if (msgEl) msgEl.textContent = 'Cancellation requested…';
+                        if (msgEl) msgEl.textContent = 'Cancellation requested… stopping current target';
+                        const btnCancel = document.getElementById('btnCancelRunModel');
+                        if (btnCancel) btnCancel.disabled = true;
+                        if (!runModelPollFast) {
+                            runModelPollFast = true;
+                            startRunModelPoll(true);
+                        }
                     }
                     return;
                 }
@@ -834,6 +882,8 @@
                 stopAnnotationTimer();
                 document.getElementById('loadingOverlay').style.display = 'none';
                 setRunModelBusy(false);
+                const btnCancel = document.getElementById('btnCancelRunModel');
+                if (btnCancel) btnCancel.disabled = false;
 
                 if (st.result) {
                     const result = st.result;
@@ -844,6 +894,7 @@
                         processedIds = result.processed_ids || [];
                         initializeUI();
                     }
+                    if (typeof loadSessionsList === 'function') loadSessionsList();
                 } else if (st.error) {
                     const statusDiv = document.getElementById('autoAnnotateStatus');
                     statusDiv.innerHTML = `<div class="fw-bold" style="color:var(--accent-color)">Error: ${st.error}</div>`;
@@ -853,11 +904,13 @@
             }
         }
 
-        function startRunModelPoll() {
+        function startRunModelPoll(fast = false) {
             stopRunModelPoll();
-            runModelPollInterval = setInterval(pollRunModelStatus, 2000);
+            runModelPollFast = fast;
+            runModelPollInterval = setInterval(pollRunModelStatus, fast ? 500 : 1500);
             pollRunModelStatus();
         }
+        window.startRunModelPoll = startRunModelPoll;
 
         async function checkRunningJobOnLoad() {
             try {
@@ -1042,39 +1095,6 @@
             } catch (e) { /* use original start */ }
             return { start, resumed: false };
         }
-
-        document.getElementById('uploadForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const fileInput = document.getElementById('jsonFile');
-            if(!fileInput.files.length) return alert('Please select a file');
-            
-            if (currentData && !confirm("Uploading a file will replace the current session on the server. Continue?\n\nIf you reloaded the page, pick a session from the list on the left instead.")) {
-                return;
-            }
-            
-            const formData = new FormData();
-            formData.append('file', fileInput.files[0]);
-
-            try {
-                const response = await fetch('/upload', { method: 'POST', body: formData });
-                const data = await response.json();
-                if (response.ok) {
-                    currentData = data.data;
-                    processedIds = data.processed_ids;
-                    currentFilename = data.filename || null;
-                    if (data.filename && typeof updateActiveFileLabel === 'function') {
-                        updateActiveFileLabel(data.filename);
-                    }
-                    initializeUI();
-                    if (typeof showToast === 'function') showToast('File loaded successfully.', 'success');
-                } else {
-                    if (typeof showToast === 'function') showToast(data.error || 'Upload error', 'danger');
-                    else alert(data.error || 'Error uploading file');
-                }
-            } catch (error) {
-                alert(error.message || 'Error uploading file');
-            }
-        });
 
         document.getElementById('downloadFile').addEventListener('click', () => {
             window.location.href = '/download';
@@ -1550,43 +1570,21 @@
             const stats = mergeAnnotationStats(est, localStats);
             let forceReannotate = false;
 
-            if (stats.has_existing_annotations) {
+            if (
+                stats.has_existing_annotations
+                && (stats.all_annotated || (stats.targets_remaining ?? 0) === 0)
+            ) {
                 let estForce = est;
-                if (stats.all_annotated || (stats.targets_remaining ?? 0) === 0) {
-                    try {
-                        const forced = await fetchRunEstimate(start, end, true);
-                        if (forced.resp.ok) estForce = { ...stats, ...forced.est };
-                    } catch (e) { /* ignore */ }
-                }
+                try {
+                    const forced = await fetchRunEstimate(start, end, true);
+                    if (forced.resp.ok) estForce = { ...stats, ...forced.est };
+                } catch (e) { /* ignore */ }
                 const wantReannotate = confirm(buildReannotateConfirmMessage(estForce || stats));
-                if (wantReannotate) {
-                    forceReannotate = true;
-                    if (estForce) est = estForce;
-                } else if (stats.all_annotated || (stats.targets_remaining ?? 0) === 0) {
+                if (!wantReannotate) {
                     return { proceed: false, est: stats, forceReannotate: false };
-                } else {
-                    const okFill = confirm(
-                        `Fill only the ${stats.targets_remaining} empty target(s) ` +
-                        'without overwriting existing annotations?\n\n' +
-                        (stats.estimated_label
-                            ? `Estimated duration: ~${stats.estimated_label}${stats.is_cpu ? ' (slow CPU)' : ''}.`
-                            : 'Run Model?')
-                    );
-                    if (!okFill) return { proceed: false, est: stats, forceReannotate: false };
                 }
-            } else if (stats.warning) {
-                const ok = confirm(
-                    stats.warning + '\n\nEstimated duration: ~' + stats.estimated_label +
-                    '\n\nContinue anyway?'
-                );
-                if (!ok) return { proceed: false, est: stats, forceReannotate: false };
-            } else if (stats.estimated_label) {
-                const ok = confirm(
-                    `Run Model on ${stats.refs ?? stats.refs_total} references ` +
-                    `(${stats.targets_remaining ?? stats.targets ?? 0} targets)?\n` +
-                    `Estimated duration: ~${stats.estimated_label}${stats.is_cpu ? ' (slow CPU)' : ''}.`
-                );
-                if (!ok) return { proceed: false, est: stats, forceReannotate: false };
+                forceReannotate = true;
+                if (estForce) est = estForce;
             }
 
             return { proceed: true, est: stats, forceReannotate };
@@ -1632,9 +1630,6 @@
             saveRunIndexRange();
             const resolved = await resolveRunStartIndex(start, end, forceReannotate);
             start = resolved.start;
-            if (resolved.resumed && typeof showToast === 'function') {
-                showToast(`Resuming at reference index ${start} (${resolved.remaining} remaining in range)`, 'info');
-            }
             
             setRunModelBusy(true);
             document.getElementById('loadingOverlay').style.display = 'flex';
@@ -1719,7 +1714,7 @@
         });
 
         document.getElementById('clearDatabase').addEventListener('click', async () => {
-            if (confirm('Clear the SQLite processing cache? JSON files in uploads/ are not deleted.')) {
+            if (confirm('Clear the SQLite processing cache? JSON files in the storage folder are not deleted.')) {
                 try {
                     const response = await fetch('/clear_database', { method: 'POST' });
                     const result = await response.json();

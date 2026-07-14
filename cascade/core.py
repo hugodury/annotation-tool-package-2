@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import socket
 import time
 import urllib.error
 import urllib.request
@@ -28,6 +29,21 @@ class BatchCancelledError(Exception):
 
 
 CancelCheck = Callable[[], bool] | None
+
+OLLAMA_READ_POLL_SEC = 0.4
+
+
+def _http_response_socket(resp: Any):
+    fp = getattr(resp, "fp", None)
+    if fp is None:
+        return None
+    return getattr(fp, "_sock", None) or getattr(getattr(fp, "raw", None), "_sock", None)
+
+
+def _set_http_read_timeout(resp: Any, timeout_sec: float) -> None:
+    sock = _http_response_socket(resp)
+    if sock is not None:
+        sock.settimeout(timeout_sec)
 def load_config() -> dict:
     with open(CASCADE_DIR / "config.json", encoding="utf-8") as f:
         cfg = json.load(f)
@@ -174,11 +190,16 @@ def ollama_generate(
         headers={"Content-Type": "application/json"},
     )
     parts: list[str] = []
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    resp = urllib.request.urlopen(req, timeout=timeout)
+    _set_http_read_timeout(resp, OLLAMA_READ_POLL_SEC)
+    try:
         while True:
             if should_cancel and should_cancel():
-                raise BatchCancelledError("Batch annule par l'utilisateur.")
-            line = resp.readline()
+                raise BatchCancelledError("Batch cancelled by user.")
+            try:
+                line = resp.readline()
+            except socket.timeout:
+                continue
             if not line:
                 break
             line = line.decode("utf-8").strip()
@@ -190,6 +211,11 @@ def ollama_generate(
                 parts.append(chunk)
             if obj.get("done"):
                 break
+    finally:
+        try:
+            resp.close()
+        except OSError:
+            pass
     return "".join(parts)
 
 
@@ -222,7 +248,7 @@ class CascadeEngine:
         should_cancel: CancelCheck = None,
     ) -> tuple[str, float, float]:
         if should_cancel and should_cancel():
-            raise BatchCancelledError("Batch annule par l'utilisateur.")
+            raise BatchCancelledError("Batch cancelled by user.")
 
         if not should_cancel:
             return self._deberta_predict_impl(anchor, target)
@@ -240,8 +266,8 @@ class CascadeEngine:
         worker.start()
         while worker.is_alive():
             if should_cancel():
-                raise BatchCancelledError("Batch annule par l'utilisateur.")
-            worker.join(0.25)
+                raise BatchCancelledError("Batch cancelled by user.")
+            worker.join(0.15)
         if err:
             raise err[0]
         return holder["result"]
@@ -274,7 +300,7 @@ class CascadeEngine:
         last_err: str | None = None
         for attempt in range(retries + 1):
             if should_cancel and should_cancel():
-                raise BatchCancelledError("Batch annule par l'utilisateur.")
+                raise BatchCancelledError("Batch cancelled by user.")
             try:
                 raw = ollama_generate(
                     self.cfg["ollama_host"],
