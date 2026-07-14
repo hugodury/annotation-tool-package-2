@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -443,6 +443,47 @@
             border-radius: 6px;
             font-size: 0.75rem;
         }
+        .session-list {
+            max-height: 150px;
+            overflow-y: auto;
+            border: 1px solid #dee2e6;
+            border-radius: 6px;
+        }
+        .session-list .session-row {
+            display: flex;
+            align-items: center;
+            gap: 0.35rem;
+            padding: 0.35rem 0.5rem;
+            border-bottom: 1px solid #f0f0f0;
+            font-size: 0.85rem;
+        }
+        .session-list .session-row:last-child { border-bottom: none; }
+        .session-list .session-row.active { background: #f0f7ff; }
+        .session-list .session-load {
+            flex: 1;
+            text-align: left;
+            border: none;
+            background: none;
+            padding: 0;
+            font-size: 0.85rem;
+            cursor: pointer;
+        }
+        .session-list .session-delete {
+            color: #dc3545;
+            border: none;
+            background: none;
+            font-size: 1.1rem;
+            line-height: 1;
+            padding: 0 0.25rem;
+            cursor: pointer;
+        }
+        .run-model-help {
+            font-size: 0.82rem;
+            margin-top: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+        .run-model-help ul { margin-bottom: 0; }
+        .target-status-badge { font-size: 0.72rem; vertical-align: middle; }
     </style>
 </head>
 <body>
@@ -451,21 +492,21 @@
         <div class="spinner-border text-primary" role="status" style="width: 3rem; height: 3rem;">
             <span class="visually-hidden">Loading...</span>
         </div>
-        <h4 class="mt-3">Annotation automatique en cours…</h4>
-        <p id="runProgressMessage" class="mb-1 text-muted">Demarrage…</p>
+        <h4 class="mt-3">Automatic annotation in progress…</h4>
+        <p id="runProgressMessage" class="mb-1 text-muted">Starting…</p>
         <div class="run-progress-wrap">
-            <div id="runProgressLabel" class="run-progress-label">0/0 cibles — ref 0/0</div>
+            <div id="runProgressLabel" class="run-progress-label">0/0 targets — ref 0/0</div>
             <div class="progress" style="height: 1.25rem;">
                 <div id="runProgressBar" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%">0%</div>
             </div>
         </div>
-        <p id="annotationTimer" class="mt-3 mb-0 text-muted">Temps ecoule : 0 s</p>
+        <p id="annotationTimer" class="mt-3 mb-0 text-muted">Elapsed: 0 s</p>
         <div class="mt-3 d-flex gap-2 flex-wrap justify-content-center">
             <button type="button" id="btnCancelRunModel" class="btn btn-outline-danger btn-sm">
-                <i class="fas fa-stop-circle me-1"></i>Annuler
+                <i class="fas fa-stop-circle me-1"></i>Cancel
             </button>
             <button type="button" id="btnShowLogs" class="btn btn-outline-secondary btn-sm">
-                <i class="fas fa-file-alt me-1"></i>Voir les logs
+                <i class="fas fa-file-alt me-1"></i>View logs
             </button>
         </div>
         <div id="runLogPanel" style="display:none;">
@@ -485,77 +526,86 @@
                     <div id="configChecklistPanel" class="config-checklist-panel mb-3">
                         <div class="config-checklist-header">
                             <h5 class="mb-0"><i class="fas fa-clipboard-check me-1"></i> Configuration</h5>
-                            <span id="configReadyBadge" class="badge config-ready-badge warn">Verification...</span>
+                            <span id="configReadyBadge" class="badge config-ready-badge warn">Checking…</span>
                         </div>
                         <ul id="configChecklist" class="config-checklist">
-                            <li class="check-warn"><span class="check-icon">…</span><span class="check-label">Chargement de la configuration</span></li>
+                            <li class="check-warn"><span class="check-icon">…</span><span class="check-label">Loading configuration</span></li>
                         </ul>
                         <small id="configChecklistHint" class="text-muted d-block mt-2"></small>
                         <small id="configInstallNote" class="text-muted d-block mt-1"></small>
                         <div id="configMissingActions" class="config-missing-actions" style="display:none;"></div>
                     </div>
-                    <h5 class="mb-3">1. Charger et gerer</h5>
-                    <div id="activeFileLabel" class="mb-2">Fichier actif : —</div>
+                    <h5 class="mb-3">1. Load &amp; manage</h5>
+                    <div id="activeFileLabel" class="mb-2">Active file: —</div>
                     <div class="mb-2">
-                        <label class="form-label small mb-1" for="sessionSelect">Sessions enregistrees</label>
-                        <select id="sessionSelect" class="form-select form-select-sm"></select>
+                        <label class="form-label small mb-1">Saved sessions</label>
+                        <div id="sessionList" class="session-list mb-1"></div>
+                        <select id="sessionSelect" class="form-select form-select-sm d-none" aria-hidden="true"></select>
                     </div>
                     <form id="uploadForm" class="mb-3">
                         <div class="input-group">
                             <input type="file" class="form-control" id="jsonFile" accept=".json">
-                            <button type="submit" class="btn btn-primary">Charger</button>
+                            <button type="submit" class="btn btn-primary">Upload</button>
                         </div>
                     </form>
                     <div class="d-flex gap-2 mt-2 flex-wrap">
-                        <button id="resumeSession" class="btn btn-secondary btn-sm flex-fill"><i class="fas fa-history me-1"></i>Reprendre la derniere session</button>
-                        <button id="downloadFile" class="btn btn-success btn-sm flex-fill"><i class="fas fa-download me-1"></i>Telecharger JSON</button>
-                        <button id="resyncDb" type="button" class="btn btn-outline-info btn-sm flex-fill"><i class="fas fa-sync me-1"></i>Resync DB</button>
+                        <button id="downloadFile" class="btn btn-success btn-sm w-100"><i class="fas fa-download me-1"></i>Download JSON</button>
                     </div>
-                    <button id="clearDatabase" class="btn clear-button btn-sm mt-3 w-100">Vider le cache SQLite</button>
+                    <button id="clearDatabase" class="btn clear-button btn-sm mt-3 w-100" title="Clears SQLite processing history only — JSON files in uploads/ are kept">Clear processing cache (SQLite)</button>
                 </div>
             </div>
             <div class="col-md-7">
                 <div class="auto-annotate-panel h-100">
-                    <h5 class="mb-3">2. Auto-Annotate (AI Model)</h5>
+                    <h5 class="mb-3">2. Auto-annotate (AI model)</h5>
                     <div class="d-flex align-items-center gap-2 mb-2 flex-wrap">
-                        <input type="number" id="autoStart" class="form-control form-control-sm" placeholder="Index debut" min="0" style="max-width:7rem;">
-                        <input type="number" id="autoEnd" class="form-control form-control-sm" placeholder="Index fin" min="0" style="max-width:7rem;">
-                        <input type="number" id="autoThreshold" class="form-control form-control-sm" placeholder="Seuil τ" min="0" max="1" step="0.01" value="0.95" title="Seuil de confiance DeBERTa (masquage auto)" style="max-width:6rem;">
-                        <button id="runAutoAnnotate" class="btn btn-primary btn-sm" style="white-space: nowrap;" disabled title="Verification de la configuration…"><i class="fas fa-robot me-1"></i>Run Model</button>
-                        <button id="resumeBatch" class="btn btn-outline-secondary btn-sm" style="white-space: nowrap;" disabled title="Reprendre le batch a la prochaine reference non traitee"><i class="fas fa-forward me-1"></i>Continuer</button>
+                        <input type="number" id="autoStart" class="form-control form-control-sm" placeholder="Start index" min="0" style="max-width:7rem;">
+                        <input type="number" id="autoEnd" class="form-control form-control-sm" placeholder="End index" min="0" style="max-width:7rem;">
+                        <input type="number" id="autoThreshold" class="form-control form-control-sm" placeholder="τ" min="0" max="1" step="0.01" value="0.95" title="DeBERTa confidence threshold for auto-annotation (default 0.95)" style="max-width:6rem;">
+                        <button id="runAutoAnnotate" class="btn btn-primary btn-sm" style="white-space: nowrap;" disabled title="Checking configuration…"><i class="fas fa-robot me-1"></i>Run Model</button>
+                    </div>
+                    <div class="alert alert-light border run-model-help p-2">
+                        <strong><i class="fas fa-info-circle me-1"></i>How Run Model works</strong>
+                        <ul class="mb-0 ps-3 mt-1">
+                            <li><strong>Indices</strong> are 0-based reference positions in the JSON (not batch file numbers).</li>
+                            <li><strong>τ threshold</strong>: DeBERTa confidence for auto-fill (default 0.95). Higher = fewer LLM calls.</li>
+                            <li><strong>Run Model</strong> automatically resumes at the <em>first incomplete reference</em> in the range and skips finished targets.</li>
+                            <li><strong>Re-annotate</strong>: if annotations already exist, you will be asked whether to overwrite them.</li>
+                            <li><strong>Disagreements</strong> (<code>human</code> / <code>rejected</code> routes) are not final — they are retried on the next run.</li>
+                        </ul>
                     </div>
                     <small id="runEstimateHint" class="run-estimate-hint"></small>
-                    <small class="text-muted d-block">Disponible lorsque tous les prerequis obligatoires de la checklist sont valides.</small>
+                    <small class="text-muted d-block">Available when all required checklist items are valid.</small>
                     <div id="autoAnnotateStatus" class="mt-2"></div>
                 </div>
             </div>
         </div>
 
         <div id="navigationPanel" class="navigation-panel" style="display: none;">
-            <button id="btnPrev" class="btn btn-outline-primary"><i class="fas fa-chevron-left me-2"></i>Precedent</button>
+            <button id="btnPrev" class="btn btn-outline-primary"><i class="fas fa-chevron-left me-2"></i>Previous</button>
             <div class="flex-grow-1 px-4 text-center">
                 <div class="d-flex gap-2 justify-content-center align-items-center flex-wrap mb-2">
                     <select id="refFilter" class="form-select form-select-sm" style="max-width: 11rem;">
-                        <option value="all">Toutes les refs</option>
-                        <option value="pending">En attente</option>
-                        <option value="partial">Partielles</option>
-                        <option value="complete">Terminees</option>
-                        <option value="review">A revoir</option>
+                        <option value="all">All references</option>
+                        <option value="pending">Pending</option>
+                        <option value="partial">Partial</option>
+                        <option value="complete">Complete</option>
+                        <option value="review">Needs validation</option>
                     </select>
                     <button id="btnNextReview" type="button" class="btn btn-outline-warning btn-sm">
-                        <i class="fas fa-search me-1"></i>Prochaine revue
+                        <i class="fas fa-search me-1"></i>Next review
                     </button>
                 </div>
                 <select id="referenceSelect" class="form-select" style="max-width: 600px; margin: 0 auto;"></select>
                 <div id="processingStatus" class="mt-2 fw-bold"></div>
                 <div id="corpusStats" style="display:none;"></div>
                 <div id="cascadeLegend">
-                    <i class="fas fa-robot" style="color:#0f5132"></i> DeBERTa auto &nbsp;
-                    <i class="fas fa-brain" style="color:#084298"></i> Consensus LLM &nbsp;
-                    <i class="fas fa-user-edit" style="color:#664d03"></i> Revue humaine
+                    <i class="fas fa-robot" style="color:#0f5132"></i> Pre-filled (auto) &nbsp;
+                    <i class="fas fa-brain" style="color:#084298"></i> LLM consensus &nbsp;
+                    <i class="fas fa-user-edit" style="color:#664d03"></i> Needs validation &nbsp;
+                    <i class="fas fa-pen" style="color:#0d6efd"></i> Manually annotated
                 </div>
             </div>
-            <button id="btnNext" class="btn btn-outline-primary">Suivant<i class="fas fa-chevron-right ms-2"></i></button>
+            <button id="btnNext" class="btn btn-outline-primary">Next<i class="fas fa-chevron-right ms-2"></i></button>
         </div>
 
         <div id="singleItemView" style="display: none;">
@@ -567,10 +617,10 @@
                      <div class="database-news-list" id="databaseNewsContainer"></div>
                      <div class="text-center mt-4 mb-5" style="display:flex; justify-content:center; gap:10px;">
                          <button class="btn save-button" onclick="saveCurrentAnnotation()">
-                             <i class="fas fa-save me-2"></i>Enregistrer et suivant
+                             <i class="fas fa-save me-2"></i>Save &amp; next
                          </button>
                          <button class="btn dismiss-section-btn" onclick="dismissCurrentSection()">
-                             <i class="fas fa-ban me-2"></i>Ignorer et suivant
+                             <i class="fas fa-ban me-2"></i>Dismiss &amp; next
                          </button>
                      </div>
                  </div>
@@ -583,6 +633,7 @@
     <script>
         var currentData = null;
         var processedIds = [];
+        var currentFilename = null;
         var currentIndex = 0;
         let systemReport = null;
         let annotationTimerInterval = null;
@@ -608,10 +659,10 @@
             if (!el) return;
             const t0 = Date.now();
             if (annotationTimerInterval) clearInterval(annotationTimerInterval);
-            el.textContent = 'Temps ecoule : 0 s';
+            el.textContent = 'Elapsed: 0 s';
             annotationTimerInterval = setInterval(() => {
                 const sec = (Date.now() - t0) / 1000;
-                el.textContent = 'Temps ecoule : ' + formatDuration(sec);
+                el.textContent = 'Elapsed: ' + formatDuration(sec);
             }, 1000);
         }
 
@@ -624,28 +675,24 @@
 
         function updateRunModelButton(report) {
             const runBtn = document.getElementById('runAutoAnnotate');
-            const resumeBtn = document.getElementById('resumeBatch');
             if (!runBtn) return;
             const ollamaEnsure = report?.ollama_ensure || {};
             const ready = report?.ready_for_run_model === true;
             const preparing = ollamaEnsure.status === 'running';
             const canRun = ready && !preparing && !runModelBusy;
             runBtn.disabled = !canRun;
-            if (resumeBtn) {
-                resumeBtn.disabled = !canRun || !currentData;
-            }
             if (!canRun) {
                 if (runModelBusy) {
-                    runBtn.title = 'Run Model en cours…';
+                    runBtn.title = 'Run Model in progress…';
                 } else if (preparing) {
-                    runBtn.title = 'Preparation Ollama / LLM en cours…';
+                    runBtn.title = 'Preparing Ollama / LLM…';
                 } else if (report?.missing_required?.length) {
-                    runBtn.title = 'Manque : ' + report.missing_required.join(', ');
+                    runBtn.title = 'Missing: ' + report.missing_required.join(', ');
                 } else {
-                    runBtn.title = 'Configuration incomplete — consultez la checklist.';
+                    runBtn.title = 'Incomplete configuration — see checklist.';
                 }
             } else {
-                runBtn.title = '';
+                runBtn.title = 'Runs from the first incomplete reference in the range';
             }
         }
 
@@ -663,12 +710,12 @@
             const refDisplay = p.current_ref_num || refsDone;
             let displayDone = targetsDone;
             const msg = p.message || '';
-            const workStarted = msg.includes('cible') || msg.includes('Reference');
+            const workStarted = msg.includes('target') || msg.includes('Reference');
             if (isRunning && targetsTotal > 0 && targetsDone < targetsTotal && workStarted) {
                 displayDone = targetsDone + 1;
             }
             const inFlight = isRunning && displayDone > targetsDone;
-            const label = `${displayDone}/${targetsTotal} cibles${inFlight ? ' (en cours)' : ''} — ref ${refDisplay}/${refsTotal}`;
+            const label = `${displayDone}/${targetsTotal} targets${inFlight ? ' (running)' : ''} — ref ${refDisplay}/${refsTotal}`;
             const labelEl = document.getElementById('runProgressLabel');
             const barEl = document.getElementById('runProgressBar');
             const msgEl = document.getElementById('runProgressMessage');
@@ -683,9 +730,9 @@
             }
         }
 
-        function renderFrenchSummary(result, isPartial) {
+        function renderBatchSummary(result, isPartial) {
             const statusDiv = document.getElementById('autoAnnotateStatus');
-            const s = result.summary_fr;
+            const s = result.summary_en || result.summary_fr;
             if (!s) {
                 statusDiv.innerHTML = `<div class="fw-bold" style="color:var(--accent-color)">${result.message || result.error || ''}</div>`;
                 return;
@@ -693,19 +740,19 @@
             const reviewIdx = result.first_review_index ?? s.first_review_index;
             let reviewLink = '';
             if (reviewIdx != null && reviewIdx >= 0) {
-                reviewLink = `<button type="button" class="btn btn-sm btn-outline-primary mt-2" onclick="goToReference(${reviewIdx})"><i class="fas fa-edit me-1"></i>Corriger la reference ${reviewIdx}</button>`;
+                reviewLink = `<button type="button" class="btn btn-sm btn-outline-primary mt-2" onclick="goToReference(${reviewIdx})"><i class="fas fa-edit me-1"></i>Review reference ${reviewIdx}</button>`;
             }
             statusDiv.innerHTML = `
                 <div class="run-summary-card${isPartial ? ' partial' : ''}">
-                    <h6>${s.title || 'Annotation terminee'}${isPartial ? ' (partiel)' : ''}</h6>
+                    <h6>${s.title || 'Annotation complete'}${isPartial ? ' (partial)' : ''}</h6>
                     <div class="run-summary-stats">
-                        <span><strong>Pre-remplies</strong> : ${s.prefilled_label || ''}</span>
-                        <span><strong>Duree</strong> : ${s.duration_label || result.elapsed_label || ''}</span>
-                        <span>DeBERTa auto : ${s.deberta_auto || 0}</span>
-                        <span>DeBERTa ambigu : ${s.deberta_ambiguous || 0}</span>
-                        <span>Consensus LLM : ${s.consensus || 0}</span>
-                        <span>Revue humaine : ${s.human_review || 0}</span>
-                        <span>Rejetees : ${s.rejected || 0}</span>
+                        <span><strong>Pre-filled</strong>: ${s.prefilled_label || ''}</span>
+                        <span><strong>Duration</strong>: ${s.duration_label || result.elapsed_label || ''}</span>
+                        <span>DeBERTa auto: ${s.deberta_auto || 0}</span>
+                        <span>DeBERTa ambiguous: ${s.deberta_ambiguous || 0}</span>
+                        <span>LLM consensus: ${s.consensus || 0}</span>
+                        <span>Human review: ${s.human_review || 0}</span>
+                        <span>Rejected: ${s.rejected || 0}</span>
                     </div>
                     ${reviewLink}
                 </div>`;
@@ -739,8 +786,12 @@
                     hint.className = 'run-estimate-hint';
                     return;
                 }
-                let text = `~${est.estimated_label} estimees (${est.targets} cibles, ${est.refs} references)`;
-                if (est.is_cpu) text += ' — mode CPU lent';
+                let text = `~${est.estimated_label} estimated (${est.targets_remaining ?? est.targets}/${est.targets_total_in_range ?? est.targets} targets remaining, ${est.refs} refs)`;
+                if (est.sec_per_target) text += ` — ~${est.sec_per_target} s/target`;
+                if (est.is_cpu) text += ' — CPU';
+                if (est.all_annotated || est.has_existing_annotations) {
+                    text += ' — existing annotations (confirmation required)';
+                }
                 hint.textContent = text;
                 hint.className = est.warning ? 'run-estimate-hint warn' : 'run-estimate-hint';
                 if (est.warning) hint.textContent += '. ' + est.warning;
@@ -765,7 +816,7 @@
                     document.getElementById('loadingOverlay').style.display = 'none';
                     setRunModelBusy(false);
                     if (typeof showToast === 'function') {
-                        showToast('Serveur non a jour — redemarrez Flask (./start.sh)', 'danger');
+                        showToast('Server out of date — restart Flask (./start.sh)', 'danger');
                     }
                     return;
                 }
@@ -774,7 +825,7 @@
                     updateRunProgress(st.progress, true);
                     if (st.cancel_requested) {
                         const msgEl = document.getElementById('runProgressMessage');
-                        if (msgEl) msgEl.textContent = 'Annulation demandee…';
+                        if (msgEl) msgEl.textContent = 'Cancellation requested…';
                     }
                     return;
                 }
@@ -786,8 +837,8 @@
 
                 if (st.result) {
                     const result = st.result;
-                    const isPartial = result.partial === true || st.error === 'Batch annule.';
-                    renderFrenchSummary(result, isPartial);
+                    const isPartial = result.partial === true || st.error === 'Batch cancelled.' || st.error === 'Batch annule.';
+                    renderBatchSummary(result, isPartial);
                     if (result.data) {
                         currentData = result.data;
                         processedIds = result.processed_ids || [];
@@ -795,7 +846,7 @@
                     }
                 } else if (st.error) {
                     const statusDiv = document.getElementById('autoAnnotateStatus');
-                    statusDiv.innerHTML = `<div class="fw-bold" style="color:var(--accent-color)">Erreur : ${st.error}</div>`;
+                    statusDiv.innerHTML = `<div class="fw-bold" style="color:var(--accent-color)">Error: ${st.error}</div>`;
                 }
             } catch (e) {
                 /* retry next poll */
@@ -838,14 +889,14 @@
 
             if (freshGb) {
                 installNote.textContent =
-                    `Installation complète (1er lancement) : ~${freshGb} Go libres recommandés sur le disque.`;
+                    `Full install (first run): ~${freshGb} GB free disk space recommended.`;
             } else {
                 installNote.textContent = '';
             }
 
             if (!items.length) {
                 panel.className = 'config-checklist-panel mb-3 state-warn';
-                list.innerHTML = '<li class="check-warn"><span class="check-icon">!</span><span class="check-label">Checklist indisponible — rechargez la page</span></li>';
+                list.innerHTML = '<li class="check-warn"><span class="check-icon">!</span><span class="check-label">Checklist unavailable — reload the page</span></li>';
                 missingBox.style.display = 'none';
                 return;
             }
@@ -864,15 +915,15 @@
                     cls = item.required ? 'check-fail' : 'check-warn';
                     icon = item.required ? '✗' : '!';
                 }
-                const req = item.required ? '' : ' <span class="text-muted">(recommande)</span>';
+                const req = item.required ? '' : ' <span class="text-muted">(recommended)</span>';
                 let detail = item.detail || '';
                 if (item.id === 'disk' && hw.disk_free_gb != null) {
                     if (installDone && freshGb) {
-                        detail = `${hw.disk_free_gb} Go libres (besoin ~${freshGb} Go au 1er lancement)`;
+                        detail = `${hw.disk_free_gb} GB free (need ~${freshGb} GB on first install)`;
                     } else if (installDone) {
-                        detail = `${hw.disk_free_gb} Go libres`;
+                        detail = `${hw.disk_free_gb} GB free`;
                     } else if (freshGb) {
-                        detail = `${hw.disk_free_gb} Go libres / ~${freshGb} Go requis`;
+                        detail = `${hw.disk_free_gb} GB free / ~${freshGb} GB required`;
                     }
                 }
                 return `<li class="${cls}">
@@ -887,31 +938,31 @@
             if (ollamaEnsure.status === 'running') {
                 panel.className = 'config-checklist-panel mb-3 state-warn';
                 badge.className = 'badge config-ready-badge warn';
-                badge.textContent = 'Preparation en cours…';
-                hint.textContent = ollamaEnsure.message || 'Demarrage Ollama et telechargement du LLM.';
+                badge.textContent = 'Preparing…';
+                hint.textContent = ollamaEnsure.message || 'Starting Ollama and downloading the LLM.';
             } else if (installDone && report.ready_for_run_model) {
                 panel.className = 'config-checklist-panel mb-3 state-ok';
                 badge.className = 'badge config-ready-badge ok';
-                badge.textContent = 'Tout installe';
-                hint.textContent = 'Run Model disponible.';
+                badge.textContent = 'All set';
+                hint.textContent = 'Run Model is available.';
             } else if (report.ready_for_run_model) {
                 panel.className = 'config-checklist-panel mb-3 state-warn';
                 badge.className = 'badge config-ready-badge warn';
-                badge.textContent = 'Pret (avec reserves)';
+                badge.textContent = 'Ready (with warnings)';
                 const optionalIssues = items
                     .filter(i => !i.required && i.ok === false)
                     .map(i => i.label);
                 hint.textContent = optionalIssues.length
-                    ? 'Run Model possible — ' + optionalIssues.join(', ')
-                    : 'Run Model possible.';
+                    ? 'Run Model available — ' + optionalIssues.join(', ')
+                    : 'Run Model available.';
             } else {
                 panel.className = 'config-checklist-panel mb-3 state-fail';
                 badge.className = 'badge config-ready-badge fail';
-                badge.textContent = `${missing.length} manquant(s)`;
+                badge.textContent = `${missing.length} missing`;
                 const labels = report.missing_required && report.missing_required.length
                     ? report.missing_required
                     : missing.map(m => m.label);
-                hint.textContent = 'Manque : ' + labels.join(', ');
+                hint.textContent = 'Missing: ' + labels.join(', ');
             }
 
             const actions = missing
@@ -923,7 +974,7 @@
                 });
             }
             if (actions.length) {
-                missingBox.innerHTML = '<strong>A faire :</strong><ul>' + actions.join('') + '</ul>';
+                missingBox.innerHTML = '<strong>To do:</strong><ul>' + actions.join('') + '</ul>';
                 missingBox.style.display = 'block';
             } else {
                 missingBox.style.display = 'none';
@@ -971,34 +1022,33 @@
 
         ['autoStart', 'autoEnd'].forEach(id => {
             const el = document.getElementById(id);
-            if (el) el.addEventListener('change', refreshRunEstimate);
+            if (el) el.addEventListener('change', () => {
+                saveRunIndexRange();
+                refreshRunEstimate();
+            });
         });
 
-        document.getElementById('resumeBatch').addEventListener('click', async () => {
-            if (!currentData) return alert('Chargez un fichier JSON d abord.');
-            const start = parseInt(document.getElementById('autoStart').value, 10);
-            const end = parseInt(document.getElementById('autoEnd').value, 10);
+        async function resolveRunStartIndex(start, end, forceReannotate) {
+            if (forceReannotate || !currentData) return { start, resumed: false };
             try {
                 const resp = await fetch(`/api/auto_annotate/resume?start_index=${start}&end_index=${end}`);
                 const hint = await resp.json();
-                if (!resp.ok) return alert(hint.error || 'Erreur reprise');
-                if (hint.all_complete) {
-                    return alert('Toutes les references de cette plage sont deja traitees.');
+                if (resp.ok && !hint.all_complete && hint.resume_index != null && hint.resume_index > start) {
+                    document.getElementById('autoStart').value = hint.resume_index;
+                    saveRunIndexRange();
+                    await refreshRunEstimate();
+                    return { start: hint.resume_index, resumed: true, remaining: hint.remaining_refs };
                 }
-                document.getElementById('autoStart').value = hint.resume_index;
-                await refreshRunEstimate();
-                alert(`Reprise a l index ${hint.resume_index} (${hint.remaining_refs} reference(s) restante(s)). Cliquez Run Model pour lancer.`);
-            } catch (e) {
-                alert('Erreur lors de la reprise du batch.');
-            }
-        });
+            } catch (e) { /* use original start */ }
+            return { start, resumed: false };
+        }
 
         document.getElementById('uploadForm').addEventListener('submit', async (e) => {
             e.preventDefault();
             const fileInput = document.getElementById('jsonFile');
             if(!fileInput.files.length) return alert('Please select a file');
             
-            if (currentData && !confirm("Warning: Uploading a local file will OVERWRITE the current session on the server. Do you want to continue? (If you just reloaded the page, click 'Resume Last Session' instead!)")) {
+            if (currentData && !confirm("Uploading a file will replace the current session on the server. Continue?\n\nIf you reloaded the page, pick a session from the list on the left instead.")) {
                 return;
             }
             
@@ -1011,38 +1061,18 @@
                 if (response.ok) {
                     currentData = data.data;
                     processedIds = data.processed_ids;
+                    currentFilename = data.filename || null;
                     if (data.filename && typeof updateActiveFileLabel === 'function') {
                         updateActiveFileLabel(data.filename);
                     }
                     initializeUI();
-                    if (typeof showToast === 'function') showToast('Fichier charge avec succes.', 'success');
+                    if (typeof showToast === 'function') showToast('File loaded successfully.', 'success');
                 } else {
-                    if (typeof showToast === 'function') showToast(data.error || 'Erreur upload', 'danger');
+                    if (typeof showToast === 'function') showToast(data.error || 'Upload error', 'danger');
                     else alert(data.error || 'Error uploading file');
                 }
             } catch (error) {
                 alert(error.message || 'Error uploading file');
-            }
-        });
-
-        document.getElementById('resumeSession').addEventListener('click', async () => {
-            try {
-                const response = await fetch('/resume');
-                const data = await response.json();
-                if (response.ok) {
-                    currentData = data.data;
-                    processedIds = data.processed_ids;
-                    if (data.filename && typeof updateActiveFileLabel === 'function') {
-                        updateActiveFileLabel(data.filename);
-                    }
-                    initializeUI();
-                    if (typeof showToast === 'function') showToast('Session reprise : ' + data.filename, 'success');
-                } else {
-                    if (typeof showToast === 'function') showToast(data.error || 'Erreur reprise', 'danger');
-                    else alert(data.error || 'Error resuming session');
-                }
-            } catch (error) {
-                alert('Error resuming session');
             }
         });
 
@@ -1058,9 +1088,71 @@
         window.statusIcon = statusIcon;
 
         function statusLabel(item) {
-            if (item.annotation_status === 'complete' || item.is_processed) return 'Terminee';
-            if (item.annotation_status === 'partial') return 'Partielle';
-            return 'A annoter';
+            if (item.annotation_status === 'complete' || item.is_processed) return 'Complete';
+            if (item.annotation_status === 'partial') return 'Partial — needs validation';
+            return 'Pending annotation';
+        }
+
+        function targetStatusBadge(target) {
+            const rel = target?.related;
+            if (rel === 'dismissed') {
+                return '<span class="badge bg-secondary target-status-badge">Dismissed</span>';
+            }
+            const route = target?.cascade_route || '';
+            if (route === 'human' || route === 'rejected') {
+                return '<span class="badge bg-warning text-dark target-status-badge">Needs validation</span>';
+            }
+            if (isTargetAnnotatedLocal(target)) {
+                if (['deberta_auto', 'deberta_ambiguous', 'consensus'].includes(route)) {
+                    return '<span class="badge bg-success target-status-badge">Pre-filled (auto)</span>';
+                }
+                return '<span class="badge bg-primary target-status-badge">Manually annotated</span>';
+            }
+            return '<span class="badge bg-light text-dark border target-status-badge">Pending</span>';
+        }
+        window.targetStatusBadge = targetStatusBadge;
+
+        function runRangeStorageKey() {
+            const name = currentFilename
+                || (document.getElementById('activeFileLabel')?.textContent || '')
+                    .replace('Active file:', '').trim();
+            return name && name !== '—' ? `runRange:${name}` : 'runRange:default';
+        }
+
+        function saveRunIndexRange() {
+            const startEl = document.getElementById('autoStart');
+            const endEl = document.getElementById('autoEnd');
+            if (!startEl || !endEl) return;
+            sessionStorage.setItem(runRangeStorageKey(), JSON.stringify({
+                start: startEl.value,
+                end: endEl.value,
+            }));
+        }
+
+        function restoreRunIndexRange(dataLength) {
+            const startEl = document.getElementById('autoStart');
+            const endEl = document.getElementById('autoEnd');
+            if (!startEl || !endEl || dataLength <= 0) return;
+            let start = 0;
+            let end = dataLength - 1;
+            try {
+                const raw = sessionStorage.getItem(runRangeStorageKey());
+                if (raw) {
+                    const saved = JSON.parse(raw);
+                    const s = parseInt(saved.start, 10);
+                    const e = parseInt(saved.end, 10);
+                    if (!Number.isNaN(s) && !Number.isNaN(e)) {
+                        start = Math.max(0, Math.min(s, dataLength - 1));
+                        end = Math.max(0, Math.min(e, dataLength - 1));
+                        if (start > end) {
+                            start = 0;
+                            end = dataLength - 1;
+                        }
+                    }
+                }
+            } catch (e) { /* keep defaults */ }
+            startEl.value = start;
+            endEl.value = end;
         }
 
         function initializeUI() {
@@ -1075,8 +1167,7 @@
                 displayCurrentItem();
             };
             
-            document.getElementById('autoStart').value = 0;
-            document.getElementById('autoEnd').value = currentData.length - 1;
+            restoreRunIndexRange(currentData.length);
             refreshRunEstimate();
 
             if (typeof applyRefFilter === 'function' && document.getElementById('refFilter')) {
@@ -1122,7 +1213,7 @@
             const item = currentData[currentIndex];
             const statusEl = document.getElementById('processingStatus');
             const label = statusLabel(item);
-            statusEl.textContent = `Statut : ${label}`;
+            statusEl.textContent = `Reference status: ${label}`;
             if (item.annotation_status === 'complete' || item.is_processed) {
                 statusEl.style.color = 'var(--success-color)';
             } else if (item.annotation_status === 'partial') {
@@ -1141,8 +1232,8 @@
             const mainContainer = document.getElementById('mainNewsSticky');
             mainContainer.innerHTML = `
                 <div class="main-news-title">${esc(item.news)}</div>
-                <div class="main-news-topic"><b>Sujet :</b> ${esc(item.topic || '')}</div>
-                <div class="main-news-meta"><b>Metadonnees :</b> <pre style="background:#f8f9fa; border-radius:6px; padding:8px; overflow-x:auto;">${esc(JSON.stringify(item.metadata, (k, v) => (v === null ? 'NA' : v), 2))}</pre></div>
+                <div class="main-news-topic"><b>Topic:</b> ${esc(item.topic || '')}</div>
+                <div class="main-news-meta"><b>Metadata:</b> <pre style="background:#f8f9fa; border-radius:6px; padding:8px; overflow-x:auto;">${esc(JSON.stringify(item.metadata, (k, v) => (v === null ? 'NA' : v), 2))}</pre></div>
             `;
             
             // Database targets
@@ -1156,6 +1247,7 @@
                 const isDismissed = rel === 'dismissed';
                 const isAutoHidden = (conf >= 0.95 && rel !== '' && !isDismissed);
                 
+                const statusBadge = targetStatusBadge(news);
                 const route = news.cascade_route || '';
                 let badgeHtml = '';
                 if (route === 'deberta_auto') {
@@ -1193,14 +1285,14 @@
                 html += `
                     <div id="expanded-target-${i}" style="${isAutoHidden ? 'display: none;' : ''}">
                         <div class="comparison-header" style="display:flex; justify-content:space-between; align-items:center;">
-                            <h5 class="mb-0">Comparing with Target ${i + 1} ${badgeHtml} <span class="dismissed-badge">DISMISSED</span></h5>
+                            <h5 class="mb-0">Target ${i + 1} ${statusBadge} ${badgeHtml} <span class="dismissed-badge">DISMISSED</span></h5>
                             <button class="dismiss-pair-btn${isDismissed ? ' active' : ''}" data-news-index="${i}">
                                 <i class="fas fa-ban me-1"></i>${isDismissed ? 'Undo' : 'Dismiss'}
                             </button>
                         </div>
                         <div class="news-content mb-3">
-                            <div class="mb-2"><b>Titre cible :</b> ${esc(news.news)}</div>
-                            <div class="mb-2"><b>Sujet cible :</b> ${esc(news.topic || '')}</div>
+                            <div class="mb-2"><b>Target title:</b> ${esc(news.news)}</div>
+                            <div class="mb-2"><b>Target topic:</b> ${esc(news.topic || '')}</div>
                             <div><b>Metadata:</b> <pre style="background:#f8f9fa; border-radius:6px; padding:8px; overflow-x:auto;">${prettyMeta(news.metadata)}</pre></div>
                             <div class="mt-2 p-2" style="background:#e9ecef; border-radius:6px; font-family: monospace;">
                                 <b>Saved in JSON:</b> 
@@ -1321,7 +1413,7 @@
                     if (opt) {
                         opt.text = `[${currentIndex}] ${statusIcon(currentData[currentIndex])} ${currentData[currentIndex].news.substring(0, 60)}...`;
                     }
-                    if (typeof showToast === 'function') showToast('Annotation enregistree.', 'success');
+                    if (typeof showToast === 'function') showToast('Annotation saved.', 'success');
                     if (typeof updateCorpusStats === 'function') updateCorpusStats();
 
                     const nextIdx = typeof findNextIncompleteIndex === 'function'
@@ -1336,11 +1428,11 @@
                         }
                         window.scrollTo(0, 0);
                     } else {
-                        if (typeof showToast === 'function') showToast('Derniere reference atteinte.', 'info');
+                        if (typeof showToast === 'function') showToast('Last reference reached.', 'info');
                         displayCurrentItem();
                     }
                 } else {
-                    if (typeof showToast === 'function') showToast(result.error || 'Erreur', 'danger');
+                    if (typeof showToast === 'function') showToast(result.error || 'Error', 'danger');
                     else alert(result.error);
                 }
             } catch (error) {
@@ -1357,49 +1449,200 @@
             await saveCurrentAnnotation();
         }
 
+        function isTargetAnnotatedLocal(target) {
+            const rel = target?.related;
+            if (rel == null || String(rel).trim() === '') return false;
+            if (String(rel).trim().toLowerCase() === 'dismissed') return true;
+            const sim = target?.similarity_annotation;
+            if (sim == null || sim === '') return false;
+            return !Number.isNaN(parseFloat(sim));
+        }
+
+        function countLocalAnnotationStats(start, end) {
+            let targetsTotal = 0;
+            let targetsAnnotated = 0;
+            let refsComplete = 0;
+            const refsTotal = Math.max(0, end - start + 1);
+            if (!currentData) {
+                return {
+                    refs_total: refsTotal,
+                    refs_complete: 0,
+                    targets_total: 0,
+                    targets_annotated: 0,
+                    targets_remaining: 0,
+                    has_existing_annotations: false,
+                    all_annotated: false,
+                };
+            }
+            for (let i = start; i <= end && i < currentData.length; i++) {
+                const item = currentData[i];
+                const status = item.annotation_status
+                    || (item.is_processed ? 'complete' : 'pending');
+                if (status === 'complete') refsComplete += 1;
+                const targets = item.database || [];
+                targetsTotal += targets.length;
+                for (const target of targets) {
+                    if (isTargetAnnotatedLocal(target)) targetsAnnotated += 1;
+                }
+            }
+            const targetsRemaining = Math.max(0, targetsTotal - targetsAnnotated);
+            return {
+                refs_total: refsTotal,
+                refs_complete: refsComplete,
+                targets_total: targetsTotal,
+                targets_annotated: targetsAnnotated,
+                targets_remaining: targetsRemaining,
+                has_existing_annotations: targetsAnnotated > 0,
+                all_annotated: targetsTotal > 0 && targetsAnnotated === targetsTotal,
+            };
+        }
+
+        function mergeAnnotationStats(est, local) {
+            const merged = { ...local, ...(est || {}) };
+            merged.has_existing_annotations = Boolean(
+                est?.has_existing_annotations ?? local.has_existing_annotations
+            );
+            merged.all_annotated = Boolean(est?.all_annotated ?? local.all_annotated);
+            merged.targets_total_in_range = (
+                est?.targets_total_in_range ?? local.targets_total ?? est?.targets ?? 0
+            );
+            merged.targets_annotated = est?.targets_annotated ?? local.targets_annotated ?? 0;
+            merged.refs_complete = est?.refs_complete ?? local.refs_complete ?? 0;
+            if (est?.targets_remaining != null) {
+                merged.targets_remaining = est.targets_remaining;
+            } else {
+                merged.targets_remaining = local.targets_remaining ?? 0;
+            }
+            return merged;
+        }
+
+        function buildReannotateConfirmMessage(stats) {
+            const parts = [
+                'This range already contains annotations.',
+                `${stats.targets_annotated ?? 0} target(s) annotated out of ${stats.targets_total_in_range ?? stats.targets_total ?? 0}.`,
+            ];
+            if (stats.refs_complete) {
+                parts.push(`${stats.refs_complete} complete reference(s).`);
+            }
+            parts.push(
+                '',
+                'Are you sure you want to re-annotate?',
+                'Existing annotations (manual or automatic) will be overwritten.'
+            );
+            if (stats.estimated_label) {
+                parts.push('', `Estimated duration: ~${stats.estimated_label}${stats.is_cpu ? ' (slow CPU)' : ''}.`);
+            }
+            return parts.join('\n');
+        }
+
+        async function confirmRunModelLaunch(start, end) {
+            const localStats = countLocalAnnotationStats(start, end);
+            let est = null;
+            try {
+                const { resp, est: estData } = await fetchRunEstimate(start, end, false);
+                if (resp.ok) {
+                    est = estData;
+                }
+            } catch (e) {
+                /* fallback to JSON loaded in the browser */
+            }
+
+            const stats = mergeAnnotationStats(est, localStats);
+            let forceReannotate = false;
+
+            if (stats.has_existing_annotations) {
+                let estForce = est;
+                if (stats.all_annotated || (stats.targets_remaining ?? 0) === 0) {
+                    try {
+                        const forced = await fetchRunEstimate(start, end, true);
+                        if (forced.resp.ok) estForce = { ...stats, ...forced.est };
+                    } catch (e) { /* ignore */ }
+                }
+                const wantReannotate = confirm(buildReannotateConfirmMessage(estForce || stats));
+                if (wantReannotate) {
+                    forceReannotate = true;
+                    if (estForce) est = estForce;
+                } else if (stats.all_annotated || (stats.targets_remaining ?? 0) === 0) {
+                    return { proceed: false, est: stats, forceReannotate: false };
+                } else {
+                    const okFill = confirm(
+                        `Fill only the ${stats.targets_remaining} empty target(s) ` +
+                        'without overwriting existing annotations?\n\n' +
+                        (stats.estimated_label
+                            ? `Estimated duration: ~${stats.estimated_label}${stats.is_cpu ? ' (slow CPU)' : ''}.`
+                            : 'Run Model?')
+                    );
+                    if (!okFill) return { proceed: false, est: stats, forceReannotate: false };
+                }
+            } else if (stats.warning) {
+                const ok = confirm(
+                    stats.warning + '\n\nEstimated duration: ~' + stats.estimated_label +
+                    '\n\nContinue anyway?'
+                );
+                if (!ok) return { proceed: false, est: stats, forceReannotate: false };
+            } else if (stats.estimated_label) {
+                const ok = confirm(
+                    `Run Model on ${stats.refs ?? stats.refs_total} references ` +
+                    `(${stats.targets_remaining ?? stats.targets ?? 0} targets)?\n` +
+                    `Estimated duration: ~${stats.estimated_label}${stats.is_cpu ? ' (slow CPU)' : ''}.`
+                );
+                if (!ok) return { proceed: false, est: stats, forceReannotate: false };
+            }
+
+            return { proceed: true, est: stats, forceReannotate };
+        }
+
+        async function fetchRunEstimate(start, end, forceReannotate = false) {
+            const resp = await fetch('/api/auto_annotate/estimate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    start_index: start,
+                    end_index: end,
+                    force_reannotate: forceReannotate,
+                }),
+            });
+            const est = await resp.json();
+            return { resp, est };
+        }
+
         // Auto Annotate
         document.getElementById('runAutoAnnotate').addEventListener('click', async () => {
-            const start = parseInt(document.getElementById('autoStart').value, 10);
+            let start = parseInt(document.getElementById('autoStart').value, 10);
             const end = parseInt(document.getElementById('autoEnd').value, 10);
             
-            if(!currentData) return alert("Chargez un fichier JSON d abord.");
+            if(!currentData) return alert('Load a JSON file first.');
 
             if (!systemReport?.ready_for_run_model) {
                 const missing = systemReport?.missing_required || [];
                 return alert(
                     missing.length
-                        ? 'Run Model indisponible. Manque : ' + missing.join(', ')
-                        : 'Run Model indisponible — completez la configuration.'
+                        ? 'Run Model unavailable. Missing: ' + missing.join(', ')
+                        : 'Run Model unavailable — complete the configuration checklist.'
                 );
             }
 
             let est = null;
-            try {
-                const estResp = await fetch('/api/auto_annotate/estimate', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ start_index: start, end_index: end })
-                });
-                est = await estResp.json();
-                if (estResp.ok && est.warning) {
-                    const ok = confirm(
-                        est.warning + '\n\nDuree estimee : ~' + est.estimated_label +
-                        '\n\nLancer quand meme ?'
-                    );
-                    if (!ok) return;
-                } else if (estResp.ok && est.estimated_label) {
-                    const ok = confirm(
-                        `Lancer Run Model sur ${est.refs} references (${est.targets} cibles) ?\n` +
-                        `Duree estimee : ~${est.estimated_label}${est.is_cpu ? ' (CPU lent)' : ''}.`
-                    );
-                    if (!ok) return;
-                }
-            } catch (e) { /* continue without estimate */ }
+            let forceReannotate = false;
+            const launch = await confirmRunModelLaunch(start, end);
+            if (!launch.proceed) return;
+            est = launch.est;
+            forceReannotate = launch.forceReannotate;
+
+            saveRunIndexRange();
+            const resolved = await resolveRunStartIndex(start, end, forceReannotate);
+            start = resolved.start;
+            if (resolved.resumed && typeof showToast === 'function') {
+                showToast(`Resuming at reference index ${start} (${resolved.remaining} remaining in range)`, 'info');
+            }
             
             setRunModelBusy(true);
             document.getElementById('loadingOverlay').style.display = 'flex';
             const refsTotal = Math.max(0, end - start + 1);
-            let targetsTotal = est?.targets;
+            let targetsTotal = est?.targets_total_in_range ?? est?.targets_total ?? est?.targets;
+            if (forceReannotate) {
+                targetsTotal = est?.targets_total_in_range ?? est?.targets_total ?? targetsTotal;
+            }
             if (targetsTotal == null && currentData) {
                 targetsTotal = 0;
                 for (let i = start; i <= end && i < currentData.length; i++) {
@@ -1411,7 +1654,7 @@
                 targets_total: targetsTotal || 0,
                 refs_done: 0,
                 refs_total: est?.refs ?? refsTotal,
-                message: 'Demarrage…'
+                message: 'Starting…'
             }, true);
             startAnnotationTimer();
             const statusDiv = document.getElementById('autoAnnotateStatus');
@@ -1425,7 +1668,8 @@
                     body: JSON.stringify({
                         start_index: start,
                         end_index: end,
-                        threshold: Number.isNaN(threshold) ? 0.95 : threshold
+                        threshold: Number.isNaN(threshold) ? 0.95 : threshold,
+                        force_reannotate: forceReannotate,
                     })
                 });
                 const result = await response.json();
@@ -1438,9 +1682,17 @@
                 stopAnnotationTimer();
                 document.getElementById('loadingOverlay').style.display = 'none';
                 setRunModelBusy(false);
+
+                if (response.status === 409 && result.needs_confirmation) {
+                    alert(
+                        (result.message || 'This range is already annotated.') +
+                        '\n\nRun Model again and confirm re-annotation to overwrite.'
+                    );
+                    return;
+                }
                 
                 if(response.ok) {
-                    renderFrenchSummary(result, false);
+                    renderBatchSummary(result, false);
                     if (result.data) {
                         currentData = result.data;
                         processedIds = result.processed_ids || [];
@@ -1449,12 +1701,12 @@
                 } else {
                     const partial = result.data && Array.isArray(result.data);
                     if (partial) {
-                        renderFrenchSummary(result, true);
+                        renderBatchSummary(result, true);
                         currentData = result.data;
                         processedIds = result.processed_ids || [];
                         initializeUI();
                     } else {
-                        statusDiv.innerHTML = `<div class="fw-bold" style="color:var(--accent-color)">Erreur : ${result.error || 'echec'}</div>`;
+                        statusDiv.innerHTML = `<div class="fw-bold" style="color:var(--accent-color)">Error: ${result.error || 'failed'}</div>`;
                     }
                 }
             } catch(e) {
@@ -1462,12 +1714,12 @@
                 stopRunModelPoll();
                 document.getElementById('loadingOverlay').style.display = 'none';
                 setRunModelBusy(false);
-                statusDiv.innerHTML = '<div class="fw-bold" style="color:var(--accent-color)">Erreur reseau lors du Run Model.</div>';
+                statusDiv.innerHTML = '<div class="fw-bold" style="color:var(--accent-color)">Network error during Run Model.</div>';
             }
         });
 
         document.getElementById('clearDatabase').addEventListener('click', async () => {
-            if (confirm('Vider le cache SQLite (historique de traitement) ? Les fichiers JSON ne sont pas supprimes.')) {
+            if (confirm('Clear the SQLite processing cache? JSON files in uploads/ are not deleted.')) {
                 try {
                     const response = await fetch('/clear_database', { method: 'POST' });
                     const result = await response.json();
@@ -1475,7 +1727,7 @@
                     else alert(result.message);
                     location.reload();
                 } catch (error) {
-                    if (typeof showToast === 'function') showToast('Erreur lors du vidage', 'danger');
+                    if (typeof showToast === 'function') showToast('Error clearing cache', 'danger');
                     else alert('Error clearing database');
                 }
             }

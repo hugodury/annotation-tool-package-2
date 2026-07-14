@@ -63,7 +63,7 @@ def python_ok() -> tuple[bool, str, bool]:
 
 def gpu_info() -> dict[str, Any]:
     device = "cpu"
-    label = "CPU uniquement"
+    label = "CPU only"
     try:
         import torch
 
@@ -76,7 +76,7 @@ def gpu_info() -> dict[str, Any]:
     except ImportError:
         if shutil.which("nvidia-smi"):
             device = "cuda"
-            label = "NVIDIA (CUDA probable, PyTorch pas encore installé)"
+            label = "NVIDIA (CUDA likely, PyTorch not installed yet)"
     return {"device": device, "label": label}
 
 
@@ -130,7 +130,7 @@ def deps_ok() -> dict[str, tuple[bool, str]]:
 
         out["pytorch"] = (True, torch.__version__)
     except ImportError:
-        out["pytorch"] = (False, "Relancez ./start.sh")
+        out["pytorch"] = (False, "Re-run ./start.sh")
     try:
         import sentence_transformers as st
 
@@ -139,7 +139,7 @@ def deps_ok() -> dict[str, tuple[bool, str]]:
         ok = parts[0] > 5 or (parts[0] == 5 and parts[1] >= 5)
         out["sentence_transformers"] = (ok, ver)
     except ImportError:
-        out["sentence_transformers"] = (False, "Relancez ./start.sh")
+        out["sentence_transformers"] = (False, "Re-run ./start.sh")
     return out
 
 
@@ -209,7 +209,7 @@ def build_checklist(
     return [
         {
             "id": "platform",
-            "label": "Systeme",
+            "label": "System",
             "ok": True,
             "required": False,
             "detail": f"{os_label} {arch}",
@@ -219,7 +219,7 @@ def build_checklist(
             "label": "Python 3.9+",
             "ok": py_ok,
             "required": True,
-            "detail": f"v{py_ver}" if py_ok else "Installez Python 3.9+",
+            "detail": f"v{py_ver}" if py_ok else "Install Python 3.9+",
             "action": PYTHON_DOWNLOAD if not py_ok else None,
         },
         {
@@ -235,31 +235,31 @@ def build_checklist(
             "label": "sentence-transformers >= 5.5",
             "ok": st_ok,
             "required": True,
-            "detail": f"v{st_ver}" if st_ok else f"v{st_ver} — modeles incompatibles",
+            "detail": f"v{st_ver}" if st_ok else f"v{st_ver} — incompatible models",
             "action": "pip install 'sentence-transformers>=5.5.1'" if not st_ok else None,
         },
         {
             "id": "ml_models",
-            "label": "Modeles ML (DeBERTa, SBERT, cross-encoder)",
+            "label": "ML models (DeBERTa, SBERT, cross-encoder)",
             "ok": models_ok,
             "required": True,
-            "detail": "Presents dans models/" if models_ok else "Manquants",
+            "detail": "Present in models/" if models_ok else "Missing",
             "action": "./start.sh" if not models_ok else None,
         },
         {
             "id": "ollama_installed",
-            "label": "Ollama installe",
+            "label": "Ollama installed",
             "ok": bool(ollama.get("installed")),
             "required": True,
-            "detail": "OK" if ollama.get("installed") else "Non installe",
+            "detail": "OK" if ollama.get("installed") else "Not installed",
             "action": OLLAMA_DOWNLOAD if not ollama.get("installed") else None,
         },
         {
             "id": "ollama_running",
-            "label": "Ollama actif (serve)",
+            "label": "Ollama running (serve)",
             "ok": bool(ollama.get("running")),
             "required": True,
-            "detail": "Service en cours" if ollama.get("running") else "ollama serve",
+            "detail": "Service running" if ollama.get("running") else "ollama serve",
             "action": "ollama serve" if not ollama.get("running") else None,
         },
         {
@@ -267,23 +267,23 @@ def build_checklist(
             "label": f"LLM {llm_tag}",
             "ok": llm_ok,
             "required": True,
-            "detail": "Telecharge" if llm_ok else "En cours ou manquant",
+            "detail": "Downloaded" if llm_ok else "Pending or missing",
             "action": f"ollama pull {llm_tag}" if not llm_ok else None,
         },
         {
             "id": "ram",
-            "label": "RAM >= 10 Go",
+            "label": "RAM >= 10 GB",
             "ok": ram_ok,
             "required": False,
-            "detail": f"{mem:.1f} Go" if mem > 0 else "Non detectee",
+            "detail": f"{mem:.1f} GB" if mem > 0 else "Not detected",
         },
         {
             "id": "disk",
-            "label": "Espace disque",
+            "label": "Disk space",
             "ok": True if install_done else (disk_ok if fresh_gb else None),
             "required": False,
             "detail": (
-                f"{disk_free} Go libres"
+                f"{disk_free} GB free"
                 if disk_free is not None
                 else ""
             ),
@@ -291,7 +291,7 @@ def build_checklist(
                 None
                 if install_done
                 else (
-                    f"~{fresh_gb} Go libres requis pour terminer l'installation"
+                    f"~{fresh_gb} GB free required to finish installation"
                     if fresh_gb and not disk_ok
                     else None
                 )
@@ -306,7 +306,7 @@ def build_checklist(
         },
         {
             "id": "performance",
-            "label": "Performance estimee",
+            "label": "Estimated performance",
             "ok": perf_ok,
             "required": False,
             "detail": performance_label,
@@ -359,44 +359,44 @@ def build_report(root: Path | None = None, cfg: dict | None = None) -> dict[str,
 
     if not py_ok:
         errors.append(
-            f"Python {py_ver} détecté — Python {PYTHON_MIN[0]}.{PYTHON_MIN[1]}+ requis. "
-            f"Téléchargement : {PYTHON_DOWNLOAD}"
+            f"Python {py_ver} detected — Python {PYTHON_MIN[0]}.{PYTHON_MIN[1]}+ required. "
+            f"Download: {PYTHON_DOWNLOAD}"
         )
     elif not py_recommended and not install_done:
         warnings.append(
-            f"Python {py_ver} fonctionne, mais Python 3.12+ est recommandé pour de meilleures performances."
+            f"Python {py_ver} works, but Python 3.12+ is recommended for better performance."
         )
 
     if not install_done:
         if not ollama["installed"]:
             warnings.append(
-                "Ollama n'est pas installé — la partie LLM de la cascade échouera. "
-                f"Téléchargement : {OLLAMA_DOWNLOAD}"
+                "Ollama is not installed — the LLM part of the cascade will fail. "
+                f"Download: {OLLAMA_DOWNLOAD}"
             )
         elif not ollama["running"]:
             warnings.append(
-                "Ollama est installé mais le service ne répond pas encore. "
-                "Démarrage automatique en cours (ollama serve)…"
+                "Ollama is installed but the service is not responding yet. "
+                "Auto-start in progress (ollama serve)…"
             )
         if not models_ok:
             warnings.append(
-                "Modèles ML manquants dans models/ (DeBERTa / SBERT / cross-encoder). "
-                "Relancez ./start.sh pour les télécharger."
+                "ML models missing in models/ (DeBERTa / SBERT / cross-encoder). "
+                "Re-run ./start.sh to download them."
             )
         if ollama["installed"] and ollama["running"] and rec_llm and not llm_ok:
             active = cfg.get("llm", {}).get("ollama", rec_llm["ollama"])
             warnings.append(
-                f"LLM « {active} » pas encore téléchargé — "
-                "téléchargement automatique en cours (plusieurs minutes)."
+                f"LLM « {active} » not downloaded yet — "
+                "automatic download in progress (may take several minutes)."
             )
 
         if mem > 0 and mem < 6:
             warnings.append(
-                f"RAM faible (~{mem:.1f} Go). L'annotation sera très lente ou pourra échouer."
+                f"Low RAM (~{mem:.1f} GB). Annotation may be very slow or fail."
             )
         elif 0 < mem < 10:
             warnings.append(
-                f"RAM limitée (~{mem:.1f} Go). Qwen 7B peut échouer ou être très lent."
+                f"Limited RAM (~{mem:.1f} GB). Qwen 7B may fail or be very slow."
             )
 
         if (
@@ -404,31 +404,31 @@ def build_report(root: Path | None = None, cfg: dict | None = None) -> dict[str,
             and not disk_info.get("disk_ok")
         ):
             warnings.append(
-                f"Espace disque insuffisant pour terminer l'installation : "
-                f"{disk_info['disk_free_gb']} Go libres, "
-                f"~{disk_info['fresh_install_required_gb']} Go recommandes."
+                f"Insufficient disk space to finish installation: "
+                f"{disk_info['disk_free_gb']} GB free, "
+                f"~{disk_info['fresh_install_required_gb']} GB recommended."
             )
 
         if gpu["device"] == "cpu":
             warnings.append(
-                "Pas de GPU détecté. DeBERTa et le LLM tourneront sur CPU — "
-                "l'annotation automatique sera nettement plus lente."
+                "No GPU detected. DeBERTa and the LLM will run on CPU — "
+                "automatic annotation will be significantly slower."
             )
 
         if rec_llm:
-            notes.append(f"LLM recommandé pour cette machine : {rec_llm['label']} ({rec_llm['ollama']})")
+            notes.append(f"Recommended LLM for this machine: {rec_llm['label']} ({rec_llm['ollama']})")
 
-        notes.append("Completez la checklist obligatoire avant Run Model.")
+        notes.append("Complete the required checklist before Run Model.")
     elif disk_info.get("disk_free_gb", 0) > 0 and disk_info.get("disk_free_gb", 0) < 0.3:
         warnings.append(
-            f"Espace disque critique : {disk_info['disk_free_gb']} Go libres."
+            f"Critical disk space: {disk_info['disk_free_gb']} GB free."
         )
 
     perf_labels = {
-        "good": "Bonne — annotation rapide attendue",
-        "acceptable": "Correcte — Qwen 7B possible mais lent",
-        "slow": "Lente — CPU uniquement, soyez patient",
-        "insufficient": "Limitée — vous pouvez quand même lancer Run Model",
+        "good": "Good — fast annotation expected",
+        "acceptable": "Fair — Qwen 7B possible but slow",
+        "slow": "Slow — CPU only, be patient",
+        "insufficient": "Limited — you can still run Run Model",
     }
 
     can_manual = py_ok

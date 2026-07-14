@@ -235,8 +235,8 @@ def ensure_llm_pulled(cfg: dict, config_path: Path, *, quiet: bool = False) -> d
                     break
             else:
                 raise RuntimeError(
-                    "Impossible de télécharger un LLM Ollama. "
-                    "Vérifiez votre connexion et l'espace disque."
+                    "Could not download an Ollama LLM. "
+                    "Check your network connection and disk space."
                 )
 
     save_active_llm(cfg, profile, config_path)
@@ -266,8 +266,8 @@ def ensure_ollama_ready(
 
     if not try_start_ollama(host):
         raise RuntimeError(
-            f"Ollama installé mais inaccessible ({host}).\n"
-            "  Relancez l'application ou exécutez : ollama serve"
+            f"Ollama installed but unreachable ({host}).\n"
+            "  Restart the app or run: ollama serve"
         )
 
     if pull_llm:
@@ -291,7 +291,7 @@ def ensure_ollama_ready_async(
         try:
             if _ensure_state["status"] == "ready":
                 return
-            _set_state("running", "Démarrage d'Ollama et préparation du LLM...")
+            _set_state("running", "Starting Ollama and preparing the LLM...")
             ensure_ollama_ready(
                 cfg,
                 config_path,
@@ -299,7 +299,7 @@ def ensure_ollama_ready_async(
                 pull_llm=pull_llm,
                 quiet=True,
             )
-            _set_state("ready", "Ollama actif — LLM prêt")
+            _set_state("ready", "Ollama running — LLM ready")
         except Exception as e:
             _set_state("error", str(e), error=str(e))
         finally:

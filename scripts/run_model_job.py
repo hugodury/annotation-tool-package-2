@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sys
 import threading
 import time
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 _lock = threading.Lock()
 _cancel_requested = False
@@ -83,6 +84,273 @@ def effective_run_config(cfg: dict, is_cpu: bool) -> dict:
     return cfg
 
 
+KNOWN_ROUTES = (
+    "deberta_auto",
+    "deberta_ambiguous",
+    "consensus",
+    "human",
+    "rejected",
+)
+
+DEFAULT_ROUTE_FRACTIONS: dict[str, float] = {
+    "deberta_auto": 0.52,
+    "deberta_ambiguous": 0.25,
+    "consensus": 0.10,
+    "human": 0.08,
+    "rejected": 0.05,
+}
+
+
+def _normalize_fractions(raw: dict[str, float]) -> dict[str, float]:
+    total = sum(raw.get(r, 0.0) for r in KNOWN_ROUTES)
+    if total <= 0:
+        return dict(DEFAULT_ROUTE_FRACTIONS)
+    return {r: raw.get(r, 0.0) / total for r in KNOWN_ROUTES}
+
+
+def _route_fractions_from_data(
+    data: list,
+    *,
+    target_is_annotated_fn: Callable[[dict], bool] | None = None,
+    min_samples: int = 24,
+) -> dict[str, float] | None:
+    counts: dict[str, int] = {r: 0 for r in KNOWN_ROUTES}
+    total = 0
+    for item in data:
+        for target in item.get("database") or []:
+            route = target.get("cascade_route")
+            if route not in counts:
+                continue
+            if target_is_annotated_fn and not target_is_annotated_fn(target):
+                continue
+            counts[route] += 1
+            total += 1
+    if total < min_samples:
+        return None
+    return _normalize_fractions({r: float(counts[r]) for r in KNOWN_ROUTES})
+
+
+def _route_fractions_from_logs(logs_dir: Path, *, min_samples: int = 24) -> dict[str, float] | None:
+    if not logs_dir.is_dir():
+        return None
+    pattern = re.compile(r"route=(\w+)")
+    counts: dict[str, int] = {r: 0 for r in KNOWN_ROUTES}
+    total = 0
+    log_files = sorted(
+        logs_dir.glob("run_model_*.log"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    for path in log_files[:3]:
+        try:
+            lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except OSError:
+            continue
+        for line in lines[-2000:]:
+            m = pattern.search(line)
+            if not m or m.group(1) not in counts:
+                continue
+            counts[m.group(1)] += 1
+            total += 1
+    if total < min_samples:
+        return None
+    return _normalize_fractions({r: float(counts[r]) for r in KNOWN_ROUTES})
+
+
+def _default_sec_per_route(is_cpu: bool, est_cfg: dict) -> dict[str, float]:
+    key = "route_sec_cpu" if is_cpu else "route_sec_gpu"
+    cfg_map = est_cfg.get(key) or {}
+    fallback_cpu = {
+        "deberta_auto": 0.6,
+        "deberta_ambiguous": 0.6,
+        "consensus": 32.0,
+        "human": 28.0,
+        "rejected": 30.0,
+    }
+    fallback_gpu = {
+        "deberta_auto": 0.35,
+        "deberta_ambiguous": 0.35,
+        "consensus": 14.0,
+        "human": 12.0,
+        "rejected": 14.0,
+    }
+    base = fallback_cpu if is_cpu else fallback_gpu
+    return {r: float(cfg_map.get(r, base[r])) for r in KNOWN_ROUTES}
+
+
+def _resolve_route_fractions(
+    data: list,
+    logs_dir: Path | None,
+    est_cfg: dict,
+    *,
+    target_is_annotated_fn: Callable[[dict], bool] | None,
+) -> tuple[dict[str, float], str]:
+    from_data = _route_fractions_from_data(data, target_is_annotated_fn=target_is_annotated_fn)
+    if from_data:
+        return from_data, "corpus annote"
+    from_logs = _route_fractions_from_logs(logs_dir) if logs_dir else None
+    if from_logs:
+        return from_logs, "logs locaux"
+    cfg_frac = est_cfg.get("route_fractions") or {}
+    if cfg_frac:
+        return _normalize_fractions({r: float(cfg_frac.get(r, 0)) for r in KNOWN_ROUTES}), "config"
+    return dict(DEFAULT_ROUTE_FRACTIONS), "defaut"
+
+
+def _resolve_sec_per_route(
+    is_cpu: bool,
+    est_cfg: dict,
+    logs_dir: Path | None,
+) -> tuple[dict[str, float], str]:
+    base = _default_sec_per_route(is_cpu, est_cfg)
+    empirical = _empirical_route_stats(logs_dir) if logs_dir else None
+    if not empirical:
+        return base, "defaut materiel"
+    merged = dict(base)
+    for route, sec in empirical.items():
+        if route in merged:
+            merged[route] = sec
+    return merged, "calibration logs + materiel"
+
+
+def _format_route_breakdown(
+    fractions: dict[str, float],
+    sec_per_route: dict[str, float],
+) -> str:
+    parts: list[str] = []
+    labels = {
+        "deberta_auto": "DeBERTa auto",
+        "deberta_ambiguous": "DeBERTa ambigu",
+        "consensus": "consensus LLM",
+        "human": "revue humaine",
+        "rejected": "rejet",
+    }
+    for route in KNOWN_ROUTES:
+        pct = int(round(fractions.get(route, 0) * 100))
+        if pct <= 0:
+            continue
+        sec = sec_per_route.get(route, 0)
+        parts.append(f"{pct}% {labels.get(route, route)} (~{sec:.0f}s)")
+    return ", ".join(parts)
+
+
+def _empirical_route_stats(logs_dir: Path, *, min_samples: int = 5) -> dict[str, float] | None:
+    """Durees medianes par route cascade depuis les logs locaux."""
+    if not logs_dir.is_dir():
+        return None
+    pattern = re.compile(r"route=(\w+).*duree=([\d.]+)s")
+    buckets: dict[str, list[float]] = {}
+    log_files = sorted(
+        logs_dir.glob("run_model_*.log"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    for path in log_files[:3]:
+        try:
+            lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except OSError:
+            continue
+        for line in lines[-1200:]:
+            m = pattern.search(line)
+            if not m:
+                continue
+            route, raw = m.group(1), float(m.group(2))
+            if 0.05 <= raw <= 900:
+                buckets.setdefault(route, []).append(raw)
+    if sum(len(v) for v in buckets.values()) < min_samples:
+        return None
+    out: dict[str, float] = {}
+    for route, vals in buckets.items():
+        if len(vals) < 3:
+            continue
+        vals.sort()
+        out[route] = vals[len(vals) // 2]
+    return out or None
+
+
+def count_range_annotation_stats(
+    data: list,
+    start_index: int,
+    end_index: int,
+    *,
+    ref_status_fn: Callable[[dict], str] | None = None,
+    target_is_annotated_fn: Callable[[dict], bool] | None = None,
+) -> dict[str, int | bool]:
+    """Compte annotations existantes sur une plage d'indices."""
+    refs_total = max(0, end_index - start_index + 1)
+    targets_total = 0
+    targets_annotated = 0
+    refs_complete = 0
+    refs_partial = 0
+    for idx in range(start_index, end_index + 1):
+        item = data[idx]
+        if ref_status_fn:
+            status = ref_status_fn(item)
+            if status == "complete":
+                refs_complete += 1
+            elif status == "partial":
+                refs_partial += 1
+        targets = item.get("database") or []
+        targets_total += len(targets)
+        for target in targets:
+            if target_is_annotated_fn and target_is_annotated_fn(target):
+                targets_annotated += 1
+    return {
+        "refs_total": refs_total,
+        "refs_complete": refs_complete,
+        "refs_partial": refs_partial,
+        "targets_total": targets_total,
+        "targets_annotated": targets_annotated,
+        "targets_remaining": targets_total - targets_annotated,
+        "has_existing_annotations": targets_annotated > 0,
+        "all_annotated": targets_total > 0 and targets_annotated == targets_total,
+    }
+
+
+def clear_target_for_reannotate(target: dict) -> None:
+    """Efface les champs d'annotation avant une re-annotation forcee."""
+    for key in (
+        "related",
+        "similarity_annotation",
+        "cascade_route",
+        "model_confidence",
+        "llm_error",
+        "llm_pred",
+        "llm_confidence",
+    ):
+        target.pop(key, None)
+
+
+def _count_batch_targets(
+    data: list,
+    start_index: int,
+    end_index: int,
+    *,
+    ref_status_fn: Callable[[dict], str] | None = None,
+    target_is_annotated_fn: Callable[[dict], bool] | None = None,
+    force_reannotate: bool = False,
+) -> tuple[int, int, int]:
+    """Retourne (refs, cibles totales, cibles restantes a traiter)."""
+    n_refs = max(0, end_index - start_index + 1)
+    n_targets = 0
+    n_remaining = 0
+    for idx in range(start_index, end_index + 1):
+        item = data[idx]
+        if not force_reannotate and ref_status_fn and ref_status_fn(item) == "complete":
+            continue
+        targets = item.get("database") or []
+        n_targets += len(targets)
+        for target in targets:
+            if (
+                not force_reannotate
+                and target_is_annotated_fn
+                and target_is_annotated_fn(target)
+            ):
+                continue
+            n_remaining += 1
+    return n_refs, n_targets, n_remaining
+
+
 def estimate_batch(
     data: list,
     start_index: int,
@@ -90,30 +358,92 @@ def estimate_batch(
     *,
     is_cpu: bool,
     cfg: dict,
+    ref_status_fn: Callable[[dict], str] | None = None,
+    target_is_annotated_fn: Callable[[dict], bool] | None = None,
+    logs_dir: Path | None = None,
+    force_reannotate: bool = False,
 ) -> dict[str, Any]:
     run_cfg = cfg.get("run_model", {})
     cpu_slow = run_cfg.get("cpu_slow") or {}
-    n_refs = max(0, end_index - start_index + 1)
-    n_targets = 0
-    for idx in range(start_index, end_index + 1):
-        n_targets += len(data[idx].get("database") or [])
-    sec_per = float(cpu_slow.get("sec_per_target_estimate", 5 if is_cpu else 1.5))
-    total_sec = n_targets * sec_per
+    est_cfg = run_cfg.get("estimate") or {}
+
+    range_stats = count_range_annotation_stats(
+        data,
+        start_index,
+        end_index,
+        ref_status_fn=ref_status_fn,
+        target_is_annotated_fn=target_is_annotated_fn,
+    )
+
+    n_refs, n_targets, n_remaining = _count_batch_targets(
+        data,
+        start_index,
+        end_index,
+        ref_status_fn=ref_status_fn,
+        target_is_annotated_fn=target_is_annotated_fn,
+        force_reannotate=force_reannotate,
+    )
+
+    fractions, frac_source = _resolve_route_fractions(
+        data, logs_dir, est_cfg, target_is_annotated_fn=target_is_annotated_fn
+    )
+    sec_per_route, sec_source = _resolve_sec_per_route(is_cpu, est_cfg, logs_dir)
+
+    sec_per = sum(fractions[r] * sec_per_route[r] for r in KNOWN_ROUTES)
+    model_load = float(
+        est_cfg.get("model_load_sec_cpu" if is_cpu else "model_load_sec_gpu", 90 if is_cpu else 20)
+    )
+    total_sec = model_load + n_remaining * sec_per
+
+    breakdown = _format_route_breakdown(fractions, sec_per_route)
+    hw = "CPU" if is_cpu else "GPU"
+    method_label = (
+        f"{hw} — repartition ({frac_source}) : {breakdown} ; "
+        f"~{sec_per:.1f} s/cible ({sec_source})"
+    )
+
     max_refs = int(cpu_slow.get("max_refs_suggested", 50)) if is_cpu else None
     warning = None
     if is_cpu and max_refs and n_refs > max_refs:
         warning = (
-            f"Sur CPU, plage conseillee : {max_refs} references max par batch "
-            f"(vous en avez {n_refs})."
+            f"On CPU, recommended batch size is at most {max_refs} references "
+            f"(you selected {n_refs})."
         )
+    if (
+        not force_reannotate
+        and n_remaining == 0
+        and range_stats["has_existing_annotations"]
+    ):
+        warning = (warning + " " if warning else "") + (
+            "All targets in this range are already annotated."
+        )
+
+    route_fractions_pct = {r: round(fractions[r] * 100, 1) for r in KNOWN_ROUTES}
+    route_seconds = {r: round(sec_per_route[r], 2) for r in KNOWN_ROUTES}
+
     return {
         "refs": n_refs,
         "targets": n_targets,
+        "targets_remaining": n_remaining,
         "estimated_seconds": round(total_sec),
         "estimated_label": _format_elapsed(total_sec),
+        "sec_per_target": round(sec_per, 2),
+        "estimate_method": f"{frac_source}+{sec_source}",
+        "estimate_detail": method_label,
+        "route_fractions_pct": route_fractions_pct,
+        "route_seconds": route_seconds,
+        "fraction_source": frac_source,
+        "model_load_seconds": round(model_load),
         "is_cpu": is_cpu,
         "max_refs_suggested": max_refs,
         "warning": warning,
+        "has_existing_annotations": range_stats["has_existing_annotations"],
+        "all_annotated": range_stats["all_annotated"],
+        "targets_annotated": range_stats["targets_annotated"],
+        "targets_total_in_range": range_stats["targets_total"],
+        "refs_complete": range_stats["refs_complete"],
+        "refs_partial": range_stats["refs_partial"],
+        "force_reannotate": force_reannotate,
     }
 
 
@@ -137,7 +467,7 @@ def find_resume_index(
     }
 
 
-def build_french_summary(
+def build_batch_summary(
     *,
     targets_annotated: int,
     total_targets: int,
@@ -150,8 +480,8 @@ def build_french_summary(
     rejected = routing_stats.get("rejected", 0)
     needs_manual = human + rejected
     return {
-        "title": "Annotation automatique terminee",
-        "prefilled_label": f"{targets_annotated} / {total_targets} cibles pre-remplies",
+        "title": "Automatic annotation complete",
+        "prefilled_label": f"{targets_annotated} / {total_targets} targets pre-filled",
         "deberta_auto": routing_stats.get("deberta_auto", 0),
         "deberta_ambiguous": routing_stats.get("deberta_ambiguous", 0),
         "consensus": routing_stats.get("consensus", 0),
@@ -162,14 +492,17 @@ def build_french_summary(
         "references_in_batch": references_in_batch,
         "first_review_index": first_review_index,
         "lines": [
-            f"{targets_annotated} cibles pre-remplies sur {total_targets}",
+            f"{targets_annotated} targets pre-filled out of {total_targets}",
             f"{routing_stats.get('deberta_auto', 0)} DeBERTa auto, "
-            f"{routing_stats.get('deberta_ambiguous', 0)} DeBERTa ambigu, "
-            f"{routing_stats.get('consensus', 0)} consensus LLM",
-            f"{human} revue humaine, {rejected} rejetees",
-            f"Duree : {elapsed_label}",
+            f"{routing_stats.get('deberta_ambiguous', 0)} DeBERTa ambiguous, "
+            f"{routing_stats.get('consensus', 0)} LLM consensus",
+            f"{human} human review, {rejected} rejected",
+            f"Duration: {elapsed_label}",
         ],
     }
+
+
+build_french_summary = build_batch_summary
 
 
 def _find_first_review_index(data: list, start: int, end: int) -> int | None:
@@ -194,7 +527,7 @@ def request_cancel_batch() -> bool:
         if not _state["running"]:
             return False
         _cancel_requested = True
-        _state["progress"]["message"] = "Annulation demandee…"
+        _state["progress"]["message"] = "Cancellation requested…"
         return True
 
 
@@ -213,6 +546,7 @@ def start_batch(
     file_path: Path,
     base_dir: Path,
     targets_total: int | None = None,
+    force_reannotate: bool = False,
     app_module=None,
 ) -> bool:
     if app_module is None:
@@ -231,7 +565,7 @@ def start_batch(
             "targets_total": targets_total if targets_total is not None else 0,
             "current_ref_index": start_index,
             "current_ref_num": 0,
-            "message": "Chargement des modeles ML…",
+            "message": "Loading ML models…",
         }
         _state["result"] = None
         _state["error"] = None
@@ -247,6 +581,7 @@ def start_batch(
             original_filename,
             file_path,
             base_dir,
+            force_reannotate,
         ),
         daemon=True,
     )
@@ -263,6 +598,7 @@ def _run_batch(
     original_filename: str,
     file_path: Path,
     base_dir: Path,
+    force_reannotate: bool = False,
 ) -> None:
     import numpy as np
 
@@ -277,6 +613,7 @@ def _run_batch(
                 file_path,
                 base_dir,
                 np,
+                force_reannotate=force_reannotate,
             )
     except Exception as e:
         logging.getLogger("run_model").exception("Erreur fatale batch: %s", e)
@@ -292,6 +629,8 @@ def _run_batch_inner(
     file_path: Path,
     base_dir: Path,
     np,
+    *,
+    force_reannotate: bool = False,
 ) -> None:
     from annotation_store import file_lock_for
 
@@ -305,15 +644,22 @@ def _run_batch_inner(
         from cascade.core import BatchCancelledError
 
         batch_start = time.monotonic()
-        _set_progress(message="Chargement des modeles ML (peut prendre 1-3 min sur CPU)…")
+        _set_progress(message="Loading ML models (may take 1–3 min on CPU)…")
         cfg = app_mod._load_cascade_config()
         run_cfg = cfg.get("run_model", {})
+        cpu_slow = run_cfg.get("cpu_slow") or {}
         save_every = max(1, int(run_cfg.get("save_every_n_refs", 3)))
-        no_annotation_timeout = int(run_cfg.get("no_annotation_timeout", 360))
 
         report = app_mod.build_report(base_dir, cfg)
         is_cpu = report.get("hardware", {}).get("gpu", {}).get("device") == "cpu"
         cfg = effective_run_config(cfg, is_cpu)
+
+        no_annotation_timeout = int(run_cfg.get("no_annotation_timeout", 360))
+        if is_cpu:
+            no_annotation_timeout = max(
+                no_annotation_timeout,
+                int(cpu_slow.get("no_annotation_timeout_sec", 900)),
+            )
 
         if is_cpu:
             app_mod.cascade_engine = None
@@ -336,7 +682,7 @@ def _run_batch_inner(
         while loader.is_alive():
             if _cancelled():
                 logger.info("Batch annule pendant chargement des modeles")
-                _finish(error="Batch annule.")
+                _finish(error="Batch cancelled.")
                 return
             loader.join(0.5)
 
@@ -357,14 +703,15 @@ def _run_batch_inner(
             len(data[idx].get("database") or [])
             for idx in range(start_index, end_index + 1)
         )
-        _set_progress(targets_total=targets_total, message="Annotation en cours…")
+        _set_progress(targets_total=targets_total, message="Annotation in progress…")
         logger.info(
-            "DEBUT batch %s indices %s-%s (%s refs, %s cibles)",
+            "DEBUT batch %s indices %s-%s (%s refs, %s cibles, force=%s)",
             original_filename,
             start_index,
             end_index,
             end_index - start_index + 1,
             targets_total,
+            force_reannotate,
         )
 
         targets_annotated_count = 0
@@ -400,7 +747,7 @@ def _run_batch_inner(
                     references_fully_annotated_count,
                     routing_stats,
                     elapsed,
-                    partial_error="Batch annule par l'utilisateur.",
+                    partial_error="Batch cancelled by user.",
                     start_index=start_index,
                     end_index=end_index,
                 ),
@@ -421,14 +768,17 @@ def _run_batch_inner(
                 message=f"Reference {ref_num} / {end_index - start_index + 1} (index {idx})",
             )
 
-            if app_mod.reference_status_from_item(item) == "complete":
+            if (
+                not force_reannotate
+                and app_mod.reference_status_from_item(item) == "complete"
+            ):
                 targets_skip = item.get("database") or []
                 refs_processed_in_batch += 1
                 pairs_evaluated += len(targets_skip)
                 _set_progress(
                     refs_done=refs_processed_in_batch,
                     targets_done=pairs_evaluated,
-                    message=f"Reference {ref_num} deja complete (ignoree)",
+                    message=f"Reference {ref_num} already complete (skipped)",
                 )
                 continue
 
@@ -450,13 +800,20 @@ def _run_batch_inner(
                 if _abort_cancelled():
                     return
 
-                if app_mod._target_is_annotated(target):
+                if (
+                    not force_reannotate
+                    and app_mod._target_is_annotated(target)
+                ):
                     pairs_evaluated += 1
                     _set_progress(targets_done=pairs_evaluated)
                     continue
 
+                if force_reannotate:
+                    clear_target_for_reannotate(target)
+
+                # Timeout seulement si aucune cible terminee (y compris human/rejected)
                 if (
-                    targets_annotated_count == 0
+                    pairs_evaluated == 0
                     and time.monotonic() - batch_start > no_annotation_timeout
                 ):
                     save_checkpoint()
@@ -490,7 +847,7 @@ def _run_batch_inner(
                     current_target_total=len(targets),
                     message=(
                         f"Reference {ref_num}/{end_index - start_index + 1} — "
-                        f"cible {i + 1}/{len(targets)} (DeBERTa / LLM en cours…)"
+                        f"target {i + 1}/{len(targets)} (DeBERTa / LLM running…)"
                     ),
                 )
                 logger.info(
@@ -597,7 +954,7 @@ def _run_batch_inner(
         }
         elapsed = _format_elapsed(time.monotonic() - batch_start)
         first_review = _find_first_review_index(data, start_index, end_index)
-        summary = build_french_summary(
+        summary = build_batch_summary(
             targets_annotated=targets_annotated_count,
             total_targets=total_targets_evaluated,
             routing_stats=routing_stats,
@@ -615,6 +972,7 @@ def _run_batch_inner(
             result={
                 "ok": True,
                 "message": summary["lines"][0] + " — " + summary["duration_label"],
+                "summary_en": summary,
                 "summary_fr": summary,
                 "annotated_count": references_fully_annotated_count,
                 "data": data,
@@ -655,7 +1013,7 @@ def _partial_result(
     if end_index is None:
         end_index = len(data) - 1
     enriched = app_mod.enrich_data_with_status(original_filename, data)
-    summary = build_french_summary(
+    summary = build_batch_summary(
         targets_annotated=targets_annotated_count,
         total_targets=total_targets_evaluated,
         routing_stats=routing_stats,
@@ -673,9 +1031,10 @@ def _partial_result(
         "partial": True,
         "error": partial_error,
         "message": (
-            f"Run Model interrompu — {targets_annotated_count} cible(s) sauvegardee(s). "
-            f"Duree : {elapsed_label}."
+            f"Run Model interrupted — {targets_annotated_count} target(s) saved. "
+            f"Duration: {elapsed_label}."
         ),
+        "summary_en": summary,
         "summary_fr": summary,
         "annotated_count": references_fully_annotated_count,
         "data": enriched,

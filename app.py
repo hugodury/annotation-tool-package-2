@@ -25,6 +25,7 @@ from ollama_service import (  # noqa: E402
 )
 from system_check import build_report  # noqa: E402
 from run_model_job import (  # noqa: E402
+    count_range_annotation_stats,
     estimate_batch,
     find_resume_index,
     get_job_status,
@@ -72,6 +73,7 @@ def get_sbert_model():
     return sbert_model
 
 app = Flask(__name__)
+app.config['TEMPLATES_AUTO_RELOAD'] = True
 app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{(BASE_DIR / "instance" / "annotations.db").as_posix()}'
 app.config['UPLOAD_FOLDER'] = str(BASE_DIR / 'uploads')
 db = SQLAlchemy(app)
@@ -376,9 +378,9 @@ def save_annotation():
     annotation = req.get('annotation')
 
     if not news_id:
-        return jsonify({'error': 'news_id manquant.'}), 400
+        return jsonify({'error': 'Missing news_id.'}), 400
     if not isinstance(annotation, list):
-        return jsonify({'error': 'annotation invalide (liste attendue).'}), 400
+        return jsonify({'error': 'Invalid annotation (expected a list).'}), 400
     
     # Get the original filename, recovering from server reload if necessary
     original_filename = app.config.get('current_filename')
@@ -411,8 +413,8 @@ def save_annotation():
             if len(annotation) != len(db_list):
                 return jsonify({
                     'error': (
-                        f'Nombre de cibles incorrect : {len(annotation)} envoyees, '
-                        f'{len(db_list)} attendues.'
+                        f'Wrong number of targets: {len(annotation)} sent, '
+                        f'{len(db_list)} expected.'
                     ),
                 }), 400
             for i, ann in enumerate(annotation):
@@ -449,6 +451,22 @@ def clear_database():
     except Exception as e:
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
+
+def _safe_upload_path(filename: str) -> Path | None:
+    """Chemin JSON dans uploads/ sans alterer le nom (espaces, parentheses)."""
+    if not filename or not isinstance(filename, str):
+        return None
+    name = Path(filename).name
+    if not name.endswith('.json') or name in ('.', '..'):
+        return None
+    upload_dir = Path(app.config['UPLOAD_FOLDER']).resolve()
+    candidate = (upload_dir / name).resolve()
+    try:
+        candidate.relative_to(upload_dir)
+    except ValueError:
+        return None
+    return candidate if candidate.is_file() else None
+
 
 def _resolve_current_filename() -> str | None:
     original_filename = app.config.get('current_filename')
@@ -491,12 +509,10 @@ def api_sessions():
 @app.route('/api/sessions/load', methods=['POST'])
 def api_load_session():
     req = request.json or {}
-    filename = secure_filename(req.get('filename', ''))
-    if not filename:
-        return jsonify({'error': 'Nom de fichier invalide.'}), 400
-    file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-    if not os.path.isfile(file_path):
-        return jsonify({'error': 'Fichier introuvable.'}), 404
+    file_path = _safe_upload_path(req.get('filename', ''))
+    if not file_path:
+        return jsonify({'error': 'File not found.'}), 404
+    filename = file_path.name
     app.config['current_filename'] = filename
     with open(file_path, encoding='utf-8') as f:
         data = json.load(f)
@@ -513,18 +529,45 @@ def api_load_session():
     })
 
 
+@app.route('/api/sessions/delete', methods=['POST'])
+def api_delete_session():
+    if is_job_running():
+        return jsonify({'error': 'Cannot delete while Run Model is running.'}), 409
+    req = request.json or {}
+    requested = req.get('filename', '')
+    file_path = _safe_upload_path(requested)
+    filename = Path(requested).name if requested else ''
+    if not filename or not filename.endswith('.json'):
+        return jsonify({'error': 'Invalid filename.'}), 400
+    try:
+        ReferenceAnnotation.query.filter_by(filename=filename).delete()
+        TargetAnnotation.query.filter_by(filename=filename).delete()
+        AnnotationFile.query.filter_by(filename=filename).delete()
+        if file_path:
+            file_path.unlink()
+        if app.config.get('current_filename') == filename:
+            app.config['current_filename'] = None
+        db.session.commit()
+        if file_path:
+            return jsonify({'ok': True, 'message': f'Session deleted: {filename}'})
+        return jsonify({'ok': True, 'message': f'Entry removed (file already gone): {filename}'})
+    except OSError as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/resync', methods=['POST'])
 def api_resync():
     filename = _resolve_current_filename()
     if not filename:
-        return jsonify({'error': 'Aucun fichier charge.'}), 400
+        return jsonify({'error': 'No file loaded.'}), 400
     data, _ = _load_upload_data(filename)
     sync_file_annotations(filename, data, source='import')
     db.session.commit()
     data = enrich_data_with_status(filename, data)
     processed_ids = get_processed_ids_for_file(filename)
     return jsonify({
-        'message': 'Base resynchronisee depuis le JSON.',
+        'message': 'Database resynced from JSON.',
         'data': data,
         'processed_ids': list(processed_ids),
         'filename': filename,
@@ -549,8 +592,8 @@ def api_latest_run_log():
 @app.route('/api/auto_annotate/cancel', methods=['POST'])
 def api_auto_annotate_cancel():
     if request_cancel_batch():
-        return jsonify({'cancelled': True, 'message': 'Annulation demandee…'})
-    return jsonify({'error': 'Aucun Run Model en cours.'}), 409
+        return jsonify({'cancelled': True, 'message': 'Cancellation requested…'})
+    return jsonify({'error': 'No Run Model batch in progress.'}), 409
 
 
 @app.route('/api/auto_annotate/status')
@@ -563,16 +606,27 @@ def api_auto_annotate_estimate():
     req = request.json or {}
     original_filename = _resolve_current_filename()
     if not original_filename:
-        return jsonify({'error': 'Aucun fichier charge.'}), 400
+        return jsonify({'error': 'No file loaded.'}), 400
     data, _ = _load_upload_data(original_filename)
     try:
         start_index, end_index = parse_index_range(req, len(data))
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
+    force_reannotate = bool(req.get('force_reannotate', False))
     cfg = _load_cascade_config()
     report = build_report(BASE_DIR, cfg)
     is_cpu = report.get('hardware', {}).get('gpu', {}).get('device') == 'cpu'
-    est = estimate_batch(data, start_index, end_index, is_cpu=is_cpu, cfg=cfg)
+    est = estimate_batch(
+        data,
+        start_index,
+        end_index,
+        is_cpu=is_cpu,
+        cfg=cfg,
+        ref_status_fn=reference_status_from_item,
+        target_is_annotated_fn=_target_is_annotated,
+        logs_dir=BASE_DIR / "logs",
+        force_reannotate=force_reannotate,
+    )
     return jsonify(est)
 
 
@@ -580,7 +634,7 @@ def api_auto_annotate_estimate():
 def api_auto_annotate_resume():
     original_filename = _resolve_current_filename()
     if not original_filename:
-        return jsonify({'error': 'Aucun fichier charge.'}), 400
+        return jsonify({'error': 'No file loaded.'}), 400
     data, _ = _load_upload_data(original_filename)
     try:
         start_index = int(request.args.get('start_index', 0))
@@ -596,23 +650,44 @@ def api_auto_annotate_resume():
 @app.route('/auto_annotate', methods=['POST'])
 def auto_annotate():
     if is_job_running():
-        return jsonify({'error': 'Un Run Model est deja en cours.'}), 409
+        return jsonify({'error': 'A Run Model batch is already running.'}), 409
 
     req = request.json or {}
     try:
         threshold = float(req.get('threshold', 0.95))
     except (TypeError, ValueError):
-        return jsonify({'error': 'Seuil threshold invalide.'}), 400
+        return jsonify({'error': 'Invalid threshold value.'}), 400
 
     original_filename = _resolve_current_filename()
     if not original_filename:
-        return jsonify({'error': 'Fichier introuvable. Re-uploadez votre JSON.'}), 400
+        return jsonify({'error': 'File not found. Please re-upload your JSON.'}), 400
 
     data, file_path = _load_upload_data(original_filename)
     try:
         start_index, end_index = parse_index_range(req, len(data))
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
+
+    force_reannotate = bool(req.get('force_reannotate', False))
+    range_stats = count_range_annotation_stats(
+        data,
+        start_index,
+        end_index,
+        ref_status_fn=reference_status_from_item,
+        target_is_annotated_fn=_target_is_annotated,
+    )
+    if range_stats['all_annotated'] and not force_reannotate:
+        return jsonify({
+            'error': 'This range is already fully annotated.',
+            'needs_confirmation': True,
+            'message': (
+                f"All targets are already annotated "
+                f"({range_stats['targets_annotated']} of {range_stats['targets_total']}, "
+                f"{range_stats['refs_complete']} complete reference(s)). "
+                "Confirm re-annotation to overwrite existing annotations."
+            ),
+            **range_stats,
+        }), 409
 
     cfg_path = BASE_DIR / "cascade" / "config.json"
     cfg = _load_cascade_config()
@@ -621,16 +696,16 @@ def auto_annotate():
     except RuntimeError as e:
         return jsonify({
             'error': (
-                f"Ollama / LLM indisponible : {e}. "
-                "Reessayez dans quelques instants."
+                f"Ollama / LLM unavailable: {e}. "
+                "Try again in a few moments."
             )
         }), 503
     report = build_report(BASE_DIR, cfg)
     if not report.get("ready_for_run_model"):
         missing = report.get("missing_required") or []
-        msg = "Configuration incomplete — Run Model indisponible."
+        msg = "Incomplete configuration — Run Model unavailable."
         if missing:
-            msg += " Manque : " + ", ".join(missing)
+            msg += " Missing: " + ", ".join(missing)
         return jsonify({"error": msg, "missing_required": missing}), 503
 
     backup_path = backup_json_file(file_path)
@@ -648,14 +723,15 @@ def auto_annotate():
         file_path=file_path,
         base_dir=BASE_DIR,
         targets_total=targets_total,
+        force_reannotate=force_reannotate,
         app_module=sys.modules[__name__],
     )
     if not started:
-        return jsonify({'error': 'Impossible de demarrer le batch.'}), 409
+        return jsonify({'error': 'Could not start batch.'}), 409
 
     return jsonify({
         'started': True,
-        'message': 'Run Model demarre. Suivez la progression ci-dessous.',
+        'message': 'Run Model started. Follow progress below.',
         'poll_url': '/api/auto_annotate/status',
         'backup': str(backup_path) if backup_path else None,
     }), 202

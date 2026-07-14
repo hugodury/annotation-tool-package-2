@@ -31,12 +31,12 @@ def backup_json_file(file_path: Path) -> Path | None:
 
 def parse_index_range(req: dict, data_len: int) -> tuple[int, int]:
     if req.get("start_index") is None or req.get("end_index") is None:
-        raise ValueError("start_index et end_index sont requis.")
+        raise ValueError("start_index and end_index are required.")
     try:
         start = int(req["start_index"])
         end = int(req["end_index"])
     except (TypeError, ValueError) as e:
-        raise ValueError("Indices invalides (nombre entier attendu).") from e
+        raise ValueError("Invalid indices (integer expected).") from e
     if start < 0 or end < 0 or start > end or end >= data_len:
-        raise ValueError(f"Plage d'index invalide (0–{data_len - 1}).")
+        raise ValueError(f"Invalid index range (0–{data_len - 1}).")
     return start, end

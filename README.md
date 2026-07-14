@@ -3,7 +3,7 @@
 Application web Flask pour l'annotation VLDBench avec **cascade automatique** :
 **DeBERTa-v3** → **LLM local (Qwen 7B via Ollama)** → revue humaine.
 
-Fonctionne sur **Windows, macOS et Linux** via un setup unifié (`start.sh` / `start.bat` / `start.ps1`), ou via **Docker**.
+Interface web **entièrement en anglais**. Fonctionne sur **Windows, macOS et Linux** via un setup unifié (`start.sh` / `start.bat` / `start.ps1`), ou via **Docker**.
 
 | Ressource | Lien |
 |-----------|------|
@@ -30,6 +30,8 @@ cd annotation-tool-package-2
 
 Ouvrir **http://127.0.0.1:5000**
 
+> Après modification du code HTML/JS/Python, **redémarrer Flask** (`./start.sh`) si le serveur tournait déjà — les templates sont rechargés automatiquement au prochain démarrage (`TEMPLATES_AUTO_RELOAD`).
+
 ---
 
 ## Prérequis
@@ -44,23 +46,21 @@ Ouvrir **http://127.0.0.1:5000**
 
 Le script de démarrage installe le reste : venv, PyTorch (CPU / CUDA / MPS), modèles ML, pull Qwen via Ollama.
 
-> **Note disque** : l'espace libre affiché sur votre machine (ex. 20 Go) doit rester **au-dessus** des ~13 Go requis au premier lancement — ce ne sont pas la même chose.
-
 ---
 
-## Checklist Configuration (interface web)
+## Checklist configuration (interface web)
 
-Au chargement de l'app, une checklist vérifie **7 prérequis obligatoires** :
+Au chargement, une checklist (en anglais) vérifie **7 prérequis obligatoires** :
 
 - Python, PyTorch, sentence-transformers ≥ 5.5
-- Modèles ML (DeBERTa, SBERT, cross-encoder)
-- Ollama installé et actif
-- LLM `qwen2.5:7b-instruct` téléchargé
+- ML models (DeBERTa, SBERT, cross-encoder)
+- Ollama installed & running
+- LLM `qwen2.5:7b-instruct` downloaded
 
 **Run Model** n'est disponible que si tous ces points sont ✓ (bouton désactivé + blocage API sinon).
-RAM, GPU et performance sont informatifs seulement.
+RAM, GPU et performance estimée sont informatifs seulement.
 
-Ollama et le LLM se préparent en arrière-plan au chargement de la page (`/api/ensure-ollama`).
+Ollama et le LLM se préparent en arrière-plan (`/api/ensure-ollama`).
 
 ---
 
@@ -75,7 +75,9 @@ Ollama et le LLM se préparent en arrière-plan au chargement de la page (`/api/
 | Désaccord modéré | `human` | Flag revue humaine |
 | Timeout / erreur LLM | `human` | Revue humaine, le batch continue |
 
-Seuil τ réglable dans l'interface (champ **Seuil τ**, défaut `0.95`).
+Seuil τ réglable dans l'interface (défaut `0.95`).
+
+**Important** : les routes `human` / `rejected` **ne produisent pas** d'annotation finale (`related` + `similarity_annotation`) — elles sont **retentées** au prochain Run Model tant qu'elles ne sont pas validées manuellement.
 
 ---
 
@@ -89,10 +91,8 @@ Au premier lancement, `scripts/setup.py` les télécharge depuis la
 
 Sans release accessible :
 ```bash
-export MODELS_DOWNLOAD_URL=https://votre-hébergeur/vldbench-models-v1.tar.gz
+export MODELS_DOWNLOAD_URL=https://votre-hebergeur/vldbench-models-v1.tar.gz
 ```
-
-URL configurée dans `models.manifest.json`.
 
 ---
 
@@ -100,12 +100,11 @@ URL configurée dans `models.manifest.json`.
 
 Modèle par défaut : **Qwen2.5-7B** (`qwen2.5:7b-instruct`).
 
-Forcer un autre modèle :
 ```bash
 OLLAMA_LLM_MODEL=mon-modele:tag ./start.sh
 ```
 
-Variables optionnelles : copier `.env.example` vers `.env` (`OLLAMA_HOST`, `OLLAMA_LLM_MODEL`, `MODELS_DOWNLOAD_URL`, etc.).
+Variables optionnelles : `.env.example` → `.env` (`OLLAMA_HOST`, `OLLAMA_LLM_MODEL`, etc.).
 
 ### Timeouts, retries et mode CPU lent
 
@@ -113,16 +112,15 @@ Configurés dans `cascade/config.json` :
 
 | Paramètre | Valeur | Rôle |
 |-----------|--------|------|
-| `inference.timeout` | 600 s (10 min) | Temps max par appel LLM |
-| `inference.llm_retries` | 2 | Nouvelles tentatives si Ollama échoue |
-| `inference.keep_alive` | 30 min | Qwen reste en RAM entre les appels |
+| `inference.timeout` | 600 s | Temps max par appel LLM |
+| `inference.llm_retries` | 2 | Retries Ollama |
+| `inference.keep_alive` | 30 min | Qwen en RAM entre appels |
 | `run_model.no_annotation_timeout` | 360 s | Arrêt si aucune cible annotée |
-| `run_model.save_every_n_refs` | 3 | Sauvegarde JSON + DB tous les N refs |
-| `run_model.cpu_slow.inference_timeout_sec` | 900 s | Timeout LLM allongé sur CPU |
-| `run_model.cpu_slow.max_refs_suggested` | 50 | Alerte si batch trop large sur CPU |
-| `run_model.cpu_slow.sec_per_target_estimate` | 5 s | Estimation durée par cible (CPU) |
+| `run_model.save_every_n_refs` | 3 | Checkpoint JSON + DB tous les N refs |
+| `run_model.cpu_slow.*` | — | Timeouts et estimation allongés sur CPU |
+| `run_model.estimate.*` | — | Estimation durée par route (fractions + sec/route) |
 
-Sur CPU, les cibles passant par le LLM peuvent prendre **30 s à 2 min** chacune — la barre de progression affiche « en cours » pendant ce délai.
+Sur CPU, les cibles LLM peuvent prendre **30 s à 2 min** — la barre affiche « running » pendant ce délai.
 
 ---
 
@@ -130,59 +128,53 @@ Sur CPU, les cibles passant par le LLM peuvent prendre **30 s à 2 min** chacune
 
 ### 1. Charger un corpus
 
-- **Charger** : upload d'un fichier JSON VLDBench
-- **Reprendre la dernière session** : dernier fichier dans `uploads/`
-- **Sessions enregistrées** : liste déroulante de tous les JSON présents dans `uploads/`
-- **Fichier actif** : affiché en haut du panneau de gauche
+- **Upload** : fichier JSON VLDBench
+- **Saved sessions** : liste des JSON dans `uploads/` (clic pour charger, × pour supprimer)
+- **Active file** : fichier courant en haut du panneau gauche
+- **Download JSON** : export du fichier actif
 
 ### 2. Vérifier la configuration
 
-Badge **Tout installé** requis avant **Run Model**.
+Badge **All set** requis avant **Run Model**.
 
 ### 3. Run Model (annotation automatique)
 
-1. Indiquer **index début** et **index fin** (plage de références)
-2. Optionnel : ajuster le **seuil τ** (défaut 0,95)
-3. Cliquer **Run Model** — le batch s'exécute **en arrière-plan** (réponse HTTP 202)
-4. Suivre la **barre de progression** : cibles, références, message d'étape
-5. **Continuer** : reprend à la prochaine référence incomplète de la plage
-6. **Annuler** : arrêt du batch en cours (voir ci-dessous)
-7. **Voir les logs** : tail du fichier `logs/run_model_YYYYMMDD.log`
+Bloc d'aide intégré **« How Run Model works »** sous les champs d'index.
 
-Estimation de durée affichée avant lancement (`/api/auto_annotate/estimate`).
+1. Indiquer **Start index** et **End index** (positions **0-based** dans le JSON, pas les numéros de batch)
+2. Optionnel : ajuster **τ** (défaut 0,95)
+3. Cliquer **Run Model** — batch **asynchrone** (HTTP 202)
+4. La plage d'indices est **mémorisée par fichier** (persiste après batch / rechargement page)
+5. **Run Model reprend automatiquement** à la première référence incomplète de la plage (plus de bouton « Continuer » séparé)
+6. Estimation courte affichée avant lancement (`/api/auto_annotate/estimate`)
+7. **Annuler** / **View logs** depuis l'overlay de progression
 
-À la fin : **résumé en français** (DeBERTa auto, consensus, revue humaine, durée, lien vers la première référence à corriger).
+#### Comportement skip / re-annotation
 
-#### Annulation pendant Run Model
+| Situation | Comportement |
+|-----------|--------------|
+| Cible déjà annotée (`related` + score, ou `dismissed`) | Ignorée |
+| Cible `human` / `rejected` (pas d'annotation finale) | Retraitée |
+| Plage partiellement annotée | Confirmation : ré-annoter (écraser) **ou** compléter les cibles vides seulement |
+| Plage 100 % annotée | Confirmation obligatoire pour **ré-annoter** (`force_reannotate: true`) |
 
-Le bouton **Annuler** (overlay de progression) :
+#### Annulation
 
-1. Envoie `POST /api/auto_annotate/cancel` — l'interface affiche « Annulation demandée… »
-2. **Interrompt** l'appel LLM en cours (Ollama en streaming) ou attend la fin de l'inférence DeBERTa (~1 s max)
-3. Fonctionne aussi pendant le **chargement des modèles** (avant la première cible)
-4. **Sauvegarde** les cibles déjà traitées dans le JSON + checkpoint SQLite
-5. Affiche un **résumé partiel** et ferme l'overlay
-6. La cible en cours au moment du clic n'est en général **pas** enregistrée
-
-Pour reprendre : **Continuer** puis **Run Model** (reprise à la prochaine référence incomplète).
-
----
+- `POST /api/auto_annotate/cancel` — interruptible (LLM streaming, DeBERTa, chargement modèles)
+- Sauvegarde partielle JSON + checkpoint SQLite
+- Résumé anglais à la fin (ou partiel si annulé)
 
 ### 4. Annotation manuelle
 
-- Naviguer entre les références (Précédent / Suivant / liste)
-- **Filtre** : toutes, en attente, partielles, terminées, à revoir
-- **Prochaine revue** : saute à la prochaine référence avec désaccord ou flag humain
-- **Compteur corpus** : stats globales (complete / partielle / en attente, %)
-- **Légende cascade** : badges DeBERTa auto, consensus LLM, revue humaine
-- **Enregistrer et suivant** : sauvegarde puis saut à la prochaine référence incomplète
-- **Ignorer et suivant** : dismiss toutes les cibles de la référence
+- Navigation **Previous / Next** + liste de références
+- **Filtre** : All, Pending, Partial, Complete, Needs validation
+- **Next review** : saute aux désaccords `human` / `rejected`
+- **Badges cibles** : Pre-filled (auto), Manually annotated, Needs validation, Pending
+- **Save & next** / **Dismiss & next**
 
-### 5. Exporter
+### 5. Maintenance
 
-- **Télécharger JSON** : fichier annoté depuis `uploads/`
-- **Resync DB** : resynchronise le cache SQLite depuis le JSON (source de vérité)
-- **Vider le cache SQLite** : efface l'historique local **sans** supprimer les JSON
+- **Clear processing cache (SQLite)** : vide le cache local **sans** supprimer les JSON dans `uploads/`
 
 Protocole détaillé : `protocole.md`
 
@@ -192,27 +184,28 @@ Protocole détaillé : `protocole.md`
 
 | Emplacement | Rôle |
 |-------------|------|
-| `uploads/*.json` | **Source de vérité** — annotations, routes cascade, similarités |
-| `uploads/backups/` | Sauvegardes automatiques avant chaque Run Model |
-| `instance/annotations.db` | Cache SQLite (statuts UI, reprise) — régénérable via Resync |
-| `logs/run_model_*.log` | Journaux des batches Run Model |
+| `uploads/*.json` | **Source de vérité** |
+| `uploads/backups/` | Backup auto avant chaque Run Model |
+| `instance/annotations.db` | Cache SQLite (statuts UI) |
+| `logs/run_model_*.log` | Logs des batches |
 
-Les champs écrits par la cascade dans chaque cible : `related`, `similarity_annotation`, `cascade_route`, `model_confidence` (+ `llm_pred` / `llm_error` si applicable).
+Champs cascade par cible : `related`, `similarity_annotation`, `cascade_route`, `model_confidence` (+ `llm_pred` / `llm_error` si applicable).
 
 ---
 
 ## Robustesse
 
-- **Verrous fichier** : écritures JSON synchronisées (`scripts/annotation_store.py`)
-- **Sauvegarde incrémentale** : checkpoint JSON + DB tous les 3 refs (configurable)
-- **Reprise partielle** : skip des refs complètes et des cibles déjà annotées
-- **Backup auto** avant chaque batch
-- **Validation** : indices de plage, taille d'annotation à l'enregistrement manuel
-- **Parsing LLM robuste** : extraction JSON imbriquée + blocs ` ```json ` + retries Ollama
-- **Ollama en streaming** : permet l'annulation rapide des appels LLM en cours
-- **Annulation interruptible** : DeBERTa, LLM et chargement des modèles
-- **Progression temps réel** : polling `/api/auto_annotate/status` toutes les 2 s (barre « en cours »)
-- **Reprise au rechargement** : si un batch était en cours, l'overlay reprend automatiquement
+- Verrous fichier JSON (`scripts/annotation_store.py`)
+- Sauvegarde incrémentale (checkpoint tous les N refs)
+- Skip refs complètes et cibles déjà annotées
+- Ré-annotation forcée avec confirmation (`force_reannotate`)
+- Backup auto avant batch
+- Parsing LLM robuste + retries Ollama
+- Annulation interruptible (streaming)
+- Progression temps réel (polling `/api/auto_annotate/status` toutes les 2 s)
+- Reprise overlay si batch en cours au rechargement page
+- Chemins sessions sans altération des noms (`_safe_upload_path` — espaces, parenthèses)
+- Estimation durée calibrée par route (% DeBERTa / consensus / human / rejected)
 
 ---
 
@@ -220,25 +213,26 @@ Les champs écrits par la cascade dans chaque cible : `related`, `similarity_ann
 
 | Méthode | Route | Description |
 |---------|-------|-------------|
-| GET | `/` | Interface web |
-| GET | `/api/health` | Santé minimale (Docker healthcheck) |
-| GET | `/api/status` | Checklist configuration complète |
-| POST | `/api/ensure-ollama` | Prépare Ollama + pull LLM en arrière-plan |
+| GET | `/` | Interface web (anglais) |
+| GET | `/api/health` | Healthcheck Docker |
+| GET | `/api/status` | Checklist configuration |
+| POST | `/api/ensure-ollama` | Prépare Ollama + LLM (async) |
 | GET | `/api/system-check` | Alias diagnostic |
 | POST | `/upload` | Upload JSON |
-| GET | `/resume` | Reprend la dernière session |
+| GET | `/resume` | Dernière session dans `uploads/` |
 | GET | `/download` | Télécharge le JSON actif |
-| POST | `/save_annotation` | Sauvegarde manuelle d'une référence |
+| POST | `/save_annotation` | Sauvegarde manuelle |
 | POST | `/clear_database` | Vide le cache SQLite |
-| GET | `/api/sessions` | Liste les fichiers JSON dans `uploads/` |
-| POST | `/api/sessions/load` | Charge un fichier de session |
-| POST | `/api/resync` | Resync DB ← JSON |
-| GET | `/api/logs/run_model/latest` | Dernières lignes du log Run Model |
-| POST | `/auto_annotate` | Lance Run Model (async, 202) |
-| GET | `/api/auto_annotate/status` | État et progression du batch |
+| GET | `/api/sessions` | Liste des sessions |
+| POST | `/api/sessions/load` | Charge une session |
+| POST | `/api/sessions/delete` | Supprime un JSON de `uploads/` |
+| POST | `/api/resync` | Resync SQLite ← JSON |
+| GET | `/api/logs/run_model/latest` | Tail du log Run Model |
+| POST | `/auto_annotate` | Lance Run Model (202, `force_reannotate` optionnel) |
+| GET | `/api/auto_annotate/status` | Progression du batch |
 | POST | `/api/auto_annotate/estimate` | Estimation durée / cibles |
 | GET | `/api/auto_annotate/resume` | Index de reprise dans une plage |
-| POST | `/api/auto_annotate/cancel` | Annulation interruptible du batch en cours |
+| POST | `/api/auto_annotate/cancel` | Annulation interruptible |
 
 ---
 
@@ -248,37 +242,31 @@ Les champs écrits par la cascade dans chaque cible : `related`, `similarity_ann
 docker compose up --build
 ```
 
-Services : `app` (Flask, port 5000) + `ollama` (port 11434).
-Volumes montés : `./models`, `./uploads`, `./logs`.
-Healthchecks sur les deux services.
+Services : `app` (5000) + `ollama` (11434). Volumes : `./models`, `./uploads`, `./logs`.
 
-Voir **[DEPLOYMENT.md](DEPLOYMENT.md)** pour les détails.
+Voir **[DEPLOYMENT.md](DEPLOYMENT.md)**.
 
 ---
 
 ## Dépannage rapide
 
 ```bash
-# Vérifier la machine (sans lancer l'app)
 python scripts/system_check.py
-
-# Vérifier l'espace disque
 python scripts/disk_check.py
-
-# Relancer le setup complet
-./start.sh          # Mac / Linux
-start.bat           # Windows CMD
+./start.sh
 ```
 
 | Problème | Solution |
 |----------|----------|
-| Progression bloquée à 0/0 | Redémarrer Flask (`./start.sh`) — ancien serveur sans les routes API |
-| Compteur lent sur 0/N | Normal pendant un appel LLM (30 s–2 min/cible) ; la barre affiche « en cours » |
-| Run Model indisponible | Compléter la checklist (modèles ML, Ollama, Qwen) |
-| Session perdue après reload | **Reprendre la dernière session** ou sélecteur **Sessions** |
-| DB désynchronisée | **Resync DB** depuis l'interface |
-| Annuler sans effet | Recharger la page (Ctrl+F5) — l'annulation interrompt le LLM en streaming sous ~10 s |
-| Batch interrompu | Progression partielle sauvegardée ; **Continuer** pour reprendre |
+| Interface en français / ancienne version | Redémarrer Flask + **Ctrl+Shift+R** dans le navigateur |
+| Progression 0/0 | Redémarrer Flask (`./start.sh`) |
+| Compteur lent sur 0/N | Normal pendant un appel LLM ; barre « running » |
+| Run Model indisponible | Compléter la checklist (ML models, Ollama, Qwen) |
+| Indices remis à 0–fin après batch | Recharger après mise à jour — plage mémorisée par fichier |
+| Session introuvable (parenthèses dans le nom) | Corrigé via `_safe_upload_path` |
+| Batch timeout après 1 cible sur CPU | Corrigé (`pairs_evaluated` + timeout CPU 900 s) |
+| Annuler sans effet | Attendre ~10 s (streaming LLM) ou recharger la page |
+| Batch interrompu | Partiel sauvegardé ; relancer **Run Model** (reprise auto) |
 
 ---
 
@@ -286,32 +274,27 @@ start.bat           # Windows CMD
 
 ```
 annotation-tool-package-2/
-├── app.py                    # Flask, routes, modèles SQLAlchemy
+├── app.py                    # Flask, routes, SQLAlchemy
 ├── cascade/                  # Moteur cascade (DeBERTa + LLM)
 ├── scripts/
-│   ├── setup.py              # Installation multi-OS
-│   ├── run_model_job.py      # Batch async Run Model
-│   ├── annotation_store.py   # Verrous JSON, backups
-│   ├── system_check.py       # Diagnostic machine
-│   └── ollama_service.py     # Gestion Ollama
-├── templates/index.html      # Interface web
-├── static/app_extras.js      # Toasts, sessions, filtres
+│   ├── setup.py
+│   ├── run_model_job.py      # Batch async, estimation, re-annotation
+│   ├── annotation_store.py   # Verrous, backups, validation indices
+│   ├── system_check.py       # Checklist (labels anglais)
+│   └── ollama_service.py
+├── templates/index.html      # UI anglaise
+├── static/app_extras.js      # Sessions, filtres, toasts
 ├── uploads/                  # JSON annotés (non versionnés)
 ├── logs/                     # Logs Run Model (non versionnés)
-├── instance/                 # SQLite cache (non versionné)
-├── models/                   # Poids ML (téléchargés via Release)
-├── docker-compose.yml
-├── Dockerfile
+├── instance/                 # SQLite (non versionné)
+├── models/                   # Poids ML (Release GitHub)
 └── start.sh / start.bat / start.ps1
 ```
 
 ---
 
-## Documentation complète
+## Documentation
 
-- **[DEPLOYMENT.md](DEPLOYMENT.md)** — Docker, publication des modèles, dépannage avancé
+- **[DEPLOYMENT.md](DEPLOYMENT.md)** — Docker, modèles, dépannage avancé
 - **Release modèles** — https://github.com/hugodury/annotation-tool-package-2/releases/tag/v1.0.0
-
-## Dépôt associé
-
-[AI_annotation](https://github.com/Cespriet/AI_annotation) — entraînement, évaluation, cascade CLI.
+- **[AI_annotation](https://github.com/Cespriet/AI_annotation)** — entraînement, évaluation, cascade CLI

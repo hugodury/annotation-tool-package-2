@@ -1,4 +1,4 @@
-/** Extensions UI — toasts, sessions, filtres, navigation intelligente */
+/** UI extensions — toasts, sessions, filters, smart navigation */
 (function () {
     'use strict';
 
@@ -32,7 +32,7 @@
 
     window.updateActiveFileLabel = function (filename) {
         const el = document.getElementById('activeFileLabel');
-        if (el) el.textContent = filename ? `Fichier actif : ${filename}` : 'Fichier actif : —';
+        if (el) el.textContent = filename ? `Active file: ${filename}` : 'Active file: —';
     };
 
     window.updateCorpusStats = function () {
@@ -54,7 +54,7 @@
         });
         const pct = data.length ? Math.round((complete / data.length) * 100) : 0;
         el.style.display = 'block';
-        el.innerHTML = `<strong>Corpus :</strong> ${complete} complete(s), ${partial} partielle(s), ${pending} en attente — <strong>${pct}%</strong> termine — <strong>${review}</strong> cible(s) a revoir`;
+        el.innerHTML = `<strong>Corpus:</strong> ${complete} complete, ${partial} partial, ${pending} pending — <strong>${pct}%</strong> done — <strong>${review}</strong> target(s) need validation`;
     };
 
     window.findNextIncompleteIndex = function (from) {
@@ -111,24 +111,75 @@
     };
 
     window.loadSessionsList = async function () {
+        const list = document.getElementById('sessionList');
         const sel = document.getElementById('sessionSelect');
-        if (!sel) return;
+        if (!list) return;
         try {
             const resp = await fetch('/api/sessions');
             const data = await resp.json();
-            sel.innerHTML = '<option value="">— Choisir une session —</option>';
-            (data.sessions || []).forEach((s) => {
-                const opt = document.createElement('option');
-                opt.value = s.filename;
-                const mark = s.filename === data.current ? ' ★' : '';
-                opt.text = `${s.filename} (${s.size_mb} Mo)${mark}`;
-                sel.appendChild(opt);
+            list.innerHTML = '';
+            if (sel) sel.innerHTML = '<option value="">—</option>';
+            const sessions = data.sessions || [];
+            if (!sessions.length) {
+                list.innerHTML = '<div class="session-row text-muted px-2">No saved sessions</div>';
+                return;
+            }
+            sessions.forEach((s) => {
+                const isActive = s.filename === data.current;
+                const row = document.createElement('div');
+                row.className = 'session-row' + (isActive ? ' active' : '');
+                row.innerHTML = `
+                    <button type="button" class="session-load" title="Load this session">
+                        ${escapeHtml(s.filename)} (${s.size_mb} MB)${isActive ? ' ★' : ''}
+                    </button>
+                    <button type="button" class="session-delete" title="Delete this file" aria-label="Delete">&times;</button>`;
+                row.querySelector('.session-load').addEventListener('click', () => {
+                    loadSessionFile(s.filename);
+                });
+                row.querySelector('.session-delete').addEventListener('click', (ev) => {
+                    ev.stopPropagation();
+                    deleteSessionFile(s.filename);
+                });
+                list.appendChild(row);
+                if (sel) {
+                    const opt = document.createElement('option');
+                    opt.value = s.filename;
+                    opt.text = s.filename;
+                    sel.appendChild(opt);
+                }
             });
             if (data.current) {
-                sel.value = data.current;
+                if (sel) sel.value = data.current;
                 updateActiveFileLabel(data.current);
             }
         } catch (e) { /* ignore */ }
+    };
+
+    window.deleteSessionFile = async function (filename) {
+        if (!filename) return;
+        if (!confirm(`Delete session "${filename}"?\nThe JSON file will be removed from uploads/ (cannot be undone).`)) {
+            return;
+        }
+        try {
+            const resp = await fetch('/api/sessions/delete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filename }),
+            });
+            const data = await resp.json();
+            if (!resp.ok) return showToast(data.error || 'Delete failed', 'danger');
+            if (window.currentFilename === filename) {
+                window.currentData = null;
+                window.currentFilename = null;
+                document.getElementById('navigationPanel').style.display = 'none';
+                document.getElementById('singleItemView').style.display = 'none';
+                updateActiveFileLabel(null);
+            }
+            showToast(data.message || 'Session deleted', 'success');
+            loadSessionsList();
+        } catch (e) {
+            showToast('Network error', 'danger');
+        }
     };
 
     window.loadSessionFile = async function (filename) {
@@ -140,15 +191,15 @@
                 body: JSON.stringify({ filename }),
             });
             const data = await resp.json();
-            if (!resp.ok) return showToast(data.error || 'Erreur chargement', 'danger');
+            if (!resp.ok) return showToast(data.error || 'Load failed', 'danger');
             window.currentData = data.data;
             window.processedIds = data.processed_ids;
             window.currentFilename = data.filename;
             updateActiveFileLabel(data.filename);
             if (window.initializeUI) window.initializeUI();
-            showToast('Session chargee : ' + data.filename, 'success');
+            showToast('Session loaded: ' + data.filename, 'success');
         } catch (e) {
-            showToast('Erreur reseau', 'danger');
+            showToast('Network error', 'danger');
         }
     };
 
@@ -156,13 +207,13 @@
         try {
             const resp = await fetch('/api/resync', { method: 'POST' });
             const data = await resp.json();
-            if (!resp.ok) return showToast(data.error || 'Erreur resync', 'danger');
+            if (!resp.ok) return showToast(data.error || 'Resync failed', 'danger');
             window.currentData = data.data;
             window.processedIds = data.processed_ids;
             if (window.initializeUI) window.initializeUI();
-            showToast(data.message || 'Resynchronise', 'success');
+            showToast(data.message || 'Resynced', 'success');
         } catch (e) {
-            showToast('Erreur resync', 'danger');
+            showToast('Resync failed', 'danger');
         }
     };
 
@@ -172,13 +223,13 @@
             const resp = await fetch('/api/auto_annotate/cancel', { method: 'POST' });
             const data = await resp.json();
             if (!resp.ok) {
-                showToast(data.error || 'Aucun batch en cours', 'warning');
+                showToast(data.error || 'No batch running', 'warning');
                 return;
             }
-            if (msgEl) msgEl.textContent = 'Annulation demandee…';
-            showToast('Annulation en cours…', 'warning');
+            if (msgEl) msgEl.textContent = 'Cancellation requested…';
+            showToast('Cancelling batch…', 'warning');
         } catch (e) {
-            showToast('Impossible d annuler', 'danger');
+            showToast('Could not cancel batch', 'danger');
         }
     };
 
@@ -189,29 +240,25 @@
         try {
             const resp = await fetch('/api/logs/run_model/latest');
             const data = await resp.json();
-            pre.textContent = data.content || '(aucun log)';
+            pre.textContent = data.content || '(no log yet)';
             panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
         } catch (e) {
-            showToast('Logs indisponibles', 'danger');
+            showToast('Logs unavailable', 'danger');
         }
     };
 
     document.addEventListener('DOMContentLoaded', () => {
-        loadSessionsList();
-
         const sessionSelect = document.getElementById('sessionSelect');
         if (sessionSelect) {
             sessionSelect.addEventListener('change', () => loadSessionFile(sessionSelect.value));
         }
-        const resyncBtn = document.getElementById('resyncDb');
-        if (resyncBtn) resyncBtn.addEventListener('click', resyncDatabase);
         const refFilter = document.getElementById('refFilter');
         if (refFilter) refFilter.addEventListener('change', applyRefFilter);
         const btnReview = document.getElementById('btnNextReview');
         if (btnReview) {
             btnReview.addEventListener('click', () => {
-                const idx = findNextReviewIndex(window.currentIndex ?? -1);
-                if (idx == null) return showToast('Aucune reference a revoir', 'warning');
+                const idx = findNextReviewIndex(window.currentIndex);
+                if (idx == null) return showToast('No reference needs review', 'warning');
                 window.currentIndex = idx;
                 if (window.displayCurrentItem) window.displayCurrentItem();
             });

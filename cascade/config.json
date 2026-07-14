@@ -30,7 +30,36 @@
       "enabled": true,
       "inference_timeout_sec": 900,
       "max_refs_suggested": 50,
-      "sec_per_target_estimate": 5
+      "sec_per_target_estimate": 5,
+      "no_annotation_timeout_sec": 900,
+      "sec_deberta": 1.0,
+      "sec_llm": 45.0,
+      "llm_fraction": 0.18
+    },
+    "estimate": {
+      "model_load_sec_cpu": 90,
+      "model_load_sec_gpu": 20,
+      "route_fractions": {
+        "deberta_auto": 0.52,
+        "deberta_ambiguous": 0.25,
+        "consensus": 0.1,
+        "human": 0.08,
+        "rejected": 0.05
+      },
+      "route_sec_cpu": {
+        "deberta_auto": 0.6,
+        "deberta_ambiguous": 0.6,
+        "consensus": 32,
+        "human": 28,
+        "rejected": 30
+      },
+      "route_sec_gpu": {
+        "deberta_auto": 0.35,
+        "deberta_ambiguous": 0.35,
+        "consensus": 14,
+        "human": 12,
+        "rejected": 14
+      }
     }
   },
   "llm_auto_select": true,
