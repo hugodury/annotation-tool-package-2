@@ -136,25 +136,32 @@ Sur CPU, les cibles LLM peuvent prendre **15–45 s** selon la machine — la ba
 
 #### Estimation du temps Run Model
 
-L'estimation s'adapte à **chaque ordinateur** (CPU / GPU CUDA / Apple Silicon) :
-
-| Phase | Affichage UI | Logique |
-|-------|--------------|---------|
-| **Avant** Run Model (indices Start–End) | `Indices 400–401: estimated time ~21 s` | Durée seule — **pas** de % DeBERTa/LLM (non prédictible) |
-| **Après** batch terminé | Résumé : durée réelle + **% DeBERTa / % LLM** mesurés | Basé sur `routing_stats` du batch |
-
-**Calcul** (`POST /api/auto_annotate/estimate`) :
+L'estimation utilise un **modèle deux buckets** (Qwen / DeBERTa) calibré par machine :
 
 ```
-temps ≈ démarrage + (cibles restantes × s/cible) + (refs × 0,15 s)
-s/cible = Σ (% route × durée/route)
+temps ≈ démarrage + (n_Qwen × sec_Qwen) + (n_DeBERTa × sec_DeBERTa) + (refs × 0,15 s)
+n_Qwen = N × %_Qwen    |    n_DeBERTa = N × %_DeBERTa
 ```
 
-| Source | Quand |
-|--------|-------|
-| Défauts `run_model.estimate` | 1er lancement sur la machine |
-| Corpus déjà annoté | % routes tirés du JSON actif |
-| Logs session + `instance/estimate_calibration.json` | Après 1+ batch — calibration locale persistante |
+| Tier | Quand | % Qwen / DeBERTa | Temps par appel |
+|------|-------|------------------|-----------------|
+| **`theorique`** | **1er lancement** sur un fichier (aucun batch terminé dessus) | Répartition **théorique** de la config (~12 % / 88 %) | **Calibration machine** (`device_global` dans `instance/estimate_calibration.json`) si disponible, sinon défauts CPU/GPU |
+| **`fichier`** | Après 1+ batch **terminé sur le même fichier** | % **mesurés** lors des batches réels | Médianes **mesurées** sur ce fichier / machine |
+
+**Important** :
+- **Aucune sonde DeBERTa** au 1er lancement — l'estimation est **instantanée** dès la saisie Start/End.
+- La calibration machine (`device_global`) s'enrichit après **chaque batch** sur n'importe quel fichier (DeBERTa ~0,3 s, Qwen ~15 s sur CPU typique).
+- Sur une installation neuve sans batch passé, seuls les défauts `run_model.estimate.cpu_slow` s'appliquent (plus conservateurs).
+
+**Affichage UI** (sous Start/End) :
+
+```
+Indices 1132–1136: estimated time ~1 min 9 s (4 Qwen x 15s + 26 DeBERTa x 0.3s (12% / 88%))
+```
+
+Après batch terminé, le résumé affiche la durée réelle + % DeBERTa / % LLM mesurés.
+
+**API** : `POST /api/auto_annotate/estimate` — retourne `calibration_tier`, `estimate_formula`, `estimated_label`.
 
 Paramètres clés dans `cascade/config.json` :
 
@@ -162,8 +169,9 @@ Paramètres clés dans `cascade/config.json` :
 |-----|------|
 | `model_load_sec_cpu` / `model_load_sec_gpu` | 1er batch (chargement modèles) |
 | `model_load_sec_warm` | Batches suivants (modèles déjà en RAM) |
-| `route_fractions` | Répartition théorique DeBERTa / LLM |
-| `route_sec_cpu` / `route_sec_gpu` | Durée par route selon matériel |
+| `route_fractions` | Répartition théorique DeBERTa / LLM (1er lancement) |
+| `route_sec_cpu` / `route_sec_gpu` | Durée par route — repli si pas encore calibré |
+| `run_model.estimate.cpu_slow` | Défauts CPU (`sec_deberta`, `sec_llm`) avant calibration |
 
 ---
 
@@ -203,7 +211,7 @@ Bloc d'aide intégré **« How Run Model works »** sous les champs d'index.
 3. Cliquer **Run Model** — batch **asynchrone** (HTTP 202)
 4. La plage d'indices est **mémorisée par fichier** (persiste après batch / rechargement page)
 5. **Run Model reprend automatiquement** à la première référence incomplète de la plage (plus de bouton « Continuer » séparé)
-6. **Estimation** sous les indices : durée seule pour la plage choisie (disparaît pendant/après le batch ; résumé avec routing à la fin)
+6. **Estimation** sous les indices : formule deux buckets (Qwen × sec + DeBERTa × sec) + durée totale ; disparaît pendant/après le batch ; résumé avec routing à la fin
 7. **Annuler** / **View logs** depuis l'overlay de progression
 
 #### Comportement skip / re-annotation
@@ -245,7 +253,7 @@ Protocole détaillé : `protocole.md`
 | Dossier configurable | UI **Browse** ou variable `ANNOTATION_DATA_DIR` (défaut : `uploads/`) |
 | JSON sur le disque | **Source de vérité** — peuvent être hors du dossier de stockage |
 | `instance/saved_sessions.json` | Registre des sessions (chemins absolus, dernière utilisation) |
-| `instance/estimate_calibration.json` | Calibration durées par route (auto, après chaque batch) |
+| `instance/estimate_calibration.json` | Calibration v2 : temps machine (`device_global`) + stats par fichier (`two_bucket`) |
 | `{storage}/backups/` | Backup auto avant chaque Run Model |
 | `instance/annotations.db` | Cache SQLite (statuts UI) |
 | `logs/run_model_session.log` | Log Run Model — **réinitialisé à chaque redémarrage** du serveur |
@@ -266,7 +274,7 @@ Champs cascade par cible : `related`, `similarity_annotation`, `cascade_route`, 
 - Progression temps réel (polling `/api/auto_annotate/status` toutes les 2 s)
 - Reprise overlay si batch en cours au rechargement page
 - Chemins sessions sans altération des noms (`_safe_upload_path` — espaces, parenthèses)
-- Estimation durée calibrée par machine (`estimate_calibration.json` + logs session)
+- Estimation deux buckets : théorique au 1er lancer (config + machine), mesurée après batch sur le même fichier
 - Sélecteurs système cross-platform avec messages d'erreur explicites
 
 ---
@@ -339,7 +347,7 @@ python scripts/disk_check.py
 | Batch timeout après 1 cible sur CPU | Corrigé (`pairs_evaluated` + timeout CPU 900 s) |
 | Annuler sans effet | Attendre ~10 s (streaming LLM) ou recharger la page |
 | Batch interrompu | Partiel sauvegardé ; relancer **Run Model** (reprise auto) |
-| Estimation trop longue au 1er batch | Normal — se recalibre après le 1er Run Model sur la machine |
+| Estimation trop basse au 1er lancer (~11 s pour 30 cibles) | Corrigé — modèle deux buckets : 12 % Qwen × sec machine (~15 s) + 88 % DeBERTa × ~0,3 s |
 | Estimation affichée après batch | Changer Start/End pour la réafficher ; le résumé routing reste sous le batch |
 | Logs anciens après redémarrage | Comportement normal — un seul log par session serveur |
 

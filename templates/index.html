@@ -843,6 +843,9 @@
                     return;
                 }
                 hint.textContent = `Indices ${start}–${end}: estimated time ~${est.estimated_label}`;
+                if (est.estimate_formula) {
+                    hint.textContent += ` (${est.estimate_formula})`;
+                }
                 hint.className = est.warning ? 'run-estimate-hint warn' : 'run-estimate-hint';
                 if (est.warning) hint.textContent += '. ' + est.warning;
             } catch (e) {

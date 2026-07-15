@@ -148,10 +148,48 @@ _LOG_TS = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),(\d{3})")
 _TARGET_DONE = re.compile(
     r"TARGET DONE ref_index=\d+ ref=\d+/\d+ target=\d+/\d+ route=(\w+) duration=([\d.]+)s"
 )
+_BATCH_START_FILE = re.compile(r"BATCH START file=(.+?) indices=")
+LLM_ROUTES = ("consensus", "human", "rejected")
+DEBERTA_ROUTES = ("deberta_auto", "deberta_ambiguous")
+ESTIMATE_SAMPLE_MAX = 100
+CALIBRATION_VERSION = 2
+TPR_BUCKETS = (1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30, 40, 50, 75, 100)
+REFS_BUCKETS = (10, 25, 50, 100, 200, 300, 500, 750, 1000, 1500, 2000, 3000, 5000)
 
 
 def models_warm_in_session() -> bool:
     return _session_models_warm
+
+
+def _bucket_nearest(value: float, buckets: tuple[int, ...]) -> int:
+    if value <= buckets[0]:
+        return buckets[0]
+    best = buckets[0]
+    best_dist = abs(value - best)
+    for b in buckets[1:]:
+        dist = abs(value - b)
+        if dist < best_dist:
+            best, best_dist = b, dist
+    return best
+
+
+def compute_file_profile(data: list) -> dict[str, Any]:
+    """Profil structurel d'un JSON VLDBench (taille, densite de cibles)."""
+    refs = len(data)
+    tprs = [len(item.get("database") or []) for item in data]
+    targets_total = sum(tprs)
+    tpr_median = float(statistics.median(tprs)) if tprs else 0.0
+    tpr_bucket = _bucket_nearest(tpr_median, TPR_BUCKETS)
+    refs_bucket = _bucket_nearest(float(refs), REFS_BUCKETS)
+    profile_key = f"tpr{tpr_bucket}_r{refs_bucket}"
+    return {
+        "refs": refs,
+        "refs_bucket": refs_bucket,
+        "targets_per_ref_median": round(tpr_median, 2),
+        "targets_per_ref_bucket": tpr_bucket,
+        "targets_total": targets_total,
+        "profile_key": profile_key,
+    }
 
 
 def _calibration_path(base_dir: Path | None) -> Path | None:
@@ -160,29 +198,87 @@ def _calibration_path(base_dir: Path | None) -> Path | None:
     return base_dir / "instance" / "estimate_calibration.json"
 
 
-def _load_calibration(base_dir: Path | None, device_type: str) -> dict[str, Any] | None:
+def _empty_calibration_store(device_type: str) -> dict[str, Any]:
+    return {
+        "version": CALIBRATION_VERSION,
+        "device": device_type,
+        "device_global": {"startup_sec": None, "routes": {}},
+        "by_file": {},
+        "by_profile": {},
+    }
+
+
+def _migrate_calibration_v1(data: dict[str, Any], device_type: str) -> dict[str, Any]:
+    store = _empty_calibration_store(device_type)
+    if data.get("startup_sec"):
+        store["device_global"]["startup_sec"] = data["startup_sec"]
+    if data.get("routes"):
+        store["device_global"]["routes"] = dict(data["routes"])
+    return store
+
+
+def _load_calibration_store(base_dir: Path | None, device_type: str) -> dict[str, Any]:
     path = _calibration_path(base_dir)
     if not path or not path.is_file():
-        return None
+        return _empty_calibration_store(device_type)
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
         if not isinstance(data, dict):
-            return None
+            return _empty_calibration_store(device_type)
         if data.get("device") and data.get("device") != device_type:
-            return None
+            return _empty_calibration_store(device_type)
+        if int(data.get("version", 1)) < CALIBRATION_VERSION:
+            return _migrate_calibration_v1(data, device_type)
         return data
     except (OSError, json.JSONDecodeError):
-        return None
+        return _empty_calibration_store(device_type)
 
 
-def _save_calibration(base_dir: Path | None, payload: dict[str, Any]) -> None:
+def _save_calibration_store(base_dir: Path | None, store: dict[str, Any]) -> None:
     path = _calibration_path(base_dir)
     if not path:
         return
+    store["updated_at"] = datetime.utcnow().isoformat() + "Z"
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
+        json.dump(store, f, indent=2)
+
+
+def _merge_route_entry(
+    prev_route: dict[str, Any] | None,
+    new_vals: list[float],
+    *,
+    max_n: int = 500,
+) -> dict[str, float | int]:
+    prev_route = prev_route or {}
+    prev_n = int(prev_route.get("n", 0))
+    prev_mean = float(prev_route.get("mean", new_vals[0]))
+    merged: list[float] = []
+    if prev_n > 0:
+        merged.extend([prev_mean] * min(prev_n, 40))
+    merged.extend(new_vals[-80:])
+    return {
+        "n": min(prev_n + len(new_vals), max_n),
+        "mean": round(statistics.mean(merged), 3),
+        "p50": round(statistics.median(merged), 3),
+    }
+
+
+def _blend_startup(prev: float | None, measured: float | None) -> float | None:
+    if measured is None:
+        return prev
+    if prev is None:
+        return round(measured, 2)
+    return round(prev * 0.35 + measured * 0.65, 2)
+
+
+def _blend_sec_per_target(prev: float | None, measured: float | None) -> float | None:
+    if measured is None or measured <= 0:
+        return prev
+    if prev is None:
+        return round(measured, 3)
+    return round(prev * 0.25 + measured * 0.75, 3)
 
 
 def _parse_log_timestamp(line: str) -> float | None:
@@ -196,7 +292,11 @@ def _parse_log_timestamp(line: str) -> float | None:
         return None
 
 
-def _parse_session_log_stats(log_path: Path) -> tuple[dict[str, list[float]], list[float]]:
+def _parse_session_log_stats(
+    log_path: Path,
+    *,
+    filename: str | None = None,
+) -> tuple[dict[str, list[float]], list[float]]:
     route_buckets: dict[str, list[float]] = {r: [] for r in KNOWN_ROUTES}
     startup_delays: list[float] = []
     if not log_path.is_file():
@@ -205,16 +305,26 @@ def _parse_session_log_stats(log_path: Path) -> tuple[dict[str, list[float]], li
         lines = log_path.read_text(encoding="utf-8", errors="ignore").splitlines()
     except OSError:
         return route_buckets, startup_delays
+    active_file: str | None = None
     batch_start_ts: float | None = None
     seen_target_in_batch = False
     for line in lines:
         if "BATCH START" in line:
-            batch_start_ts = _parse_log_timestamp(line)
-            seen_target_in_batch = False
+            m = _BATCH_START_FILE.search(line)
+            active_file = m.group(1) if m else None
+            if filename is None or active_file == filename:
+                batch_start_ts = _parse_log_timestamp(line)
+                seen_target_in_batch = False
+            else:
+                batch_start_ts = None
+                seen_target_in_batch = False
             continue
         if "BATCH END" in line:
+            active_file = None
             batch_start_ts = None
             seen_target_in_batch = False
+            continue
+        if filename and active_file != filename:
             continue
         m = _TARGET_DONE.search(line)
         if not m or batch_start_ts is None:
@@ -240,48 +350,123 @@ def refresh_estimate_calibration(
     base_dir: Path | None,
     logs_dir: Path | None,
     device_type: str,
+    filename: str,
+    file_profile: dict[str, Any],
+    routing_stats: dict[str, int] | None = None,
+    batch_elapsed_sec: float | None = None,
+    targets_processed: int = 0,
+    cpu_slow: dict | None = None,
+    est_cfg: dict | None = None,
 ) -> None:
-    if not base_dir or not logs_dir:
+    if not base_dir or not logs_dir or not filename:
         return
     session = logs_dir / SESSION_LOG_FILENAME
-    route_buckets, startup_delays = _parse_session_log_stats(session)
-    if not any(route_buckets.values()):
+    route_buckets, startup_delays = _parse_session_log_stats(session, filename=filename)
+    if not any(route_buckets.values()) and not routing_stats:
         return
-    prev = _load_calibration(base_dir, device_type) or {}
-    routes_out: dict[str, dict[str, float | int]] = dict(prev.get("routes") or {})
-    for route, vals in route_buckets.items():
-        if not vals:
-            continue
-        prev_route = routes_out.get(route) or {}
-        prev_n = int(prev_route.get("n", 0))
-        prev_mean = float(prev_route.get("mean", vals[0]))
-        merged = []
-        if prev_n > 0:
-            merged.extend([prev_mean] * min(prev_n, 40))
-        merged.extend(vals[-80:])
-        routes_out[route] = {
-            "n": min(prev_n + len(vals), 500),
-            "mean": round(statistics.mean(merged), 3),
-            "p50": round(statistics.median(merged), 3),
-        }
+
+    store = _load_calibration_store(base_dir, device_type)
+    profile_key = file_profile.get("profile_key", "")
+    device_global = store.setdefault("device_global", {"startup_sec": None, "routes": {}})
+    by_file = store.setdefault("by_file", {})
+    by_profile = store.setdefault("by_profile", {})
+
+    file_entry = dict(by_file.get(filename) or {})
+    file_entry["profile_key"] = profile_key
+    file_entry["profile"] = file_profile
+    file_entry["n_batches"] = int(file_entry.get("n_batches", 0)) + 1
+
+    profile_entry = dict(by_profile.get(profile_key) or {})
+    profile_entry["profile"] = file_profile
+    profile_entry["n_batches"] = int(profile_entry.get("n_batches", 0)) + 1
+    files_seen = set(profile_entry.get("files_seen") or [])
+    files_seen.add(filename)
+    profile_entry["files_seen"] = sorted(files_seen)
+    profile_entry["file_count"] = len(files_seen)
+
     startup = _median_or_none(startup_delays)
-    prev_startup = float(prev.get("startup_sec", 0)) if prev.get("startup_sec") else None
-    if startup is not None and prev_startup is not None:
-        startup = round(prev_startup * 0.4 + startup * 0.6, 2)
-    elif startup is None:
-        startup = prev_startup
-    _save_calibration(
-        base_dir,
-        {
-            "updated_at": datetime.utcnow().isoformat() + "Z",
-            "device": device_type,
-            "startup_sec": startup,
-            "routes": routes_out,
-        },
+    device_global["startup_sec"] = _blend_startup(device_global.get("startup_sec"), startup)
+    file_entry["startup_sec"] = _blend_startup(file_entry.get("startup_sec"), startup)
+    profile_entry["startup_sec"] = _blend_startup(profile_entry.get("startup_sec"), startup)
+
+    if routing_stats:
+        total_routes = sum(int(routing_stats.get(r, 0)) for r in KNOWN_ROUTES)
+        if total_routes > 0:
+            fracs = _normalize_fractions(
+                {r: float(routing_stats.get(r, 0)) for r in KNOWN_ROUTES}
+            )
+            file_entry["route_fractions"] = fracs
+            file_entry["llm_fraction_observed"] = round(_llm_fraction(fracs), 4)
+            prev_pf = profile_entry.get("route_fractions")
+            if prev_pf:
+                blended = {
+                    r: round(prev_pf.get(r, fracs[r]) * 0.3 + fracs[r] * 0.7, 4)
+                    for r in KNOWN_ROUTES
+                }
+                profile_entry["route_fractions"] = _normalize_fractions(blended)
+            else:
+                profile_entry["route_fractions"] = fracs
+            profile_entry["llm_fraction_observed"] = round(
+                _llm_fraction(profile_entry["route_fractions"]), 4
+            )
+
+    weighted_from_logs = _weighted_sec_per_from_routes(route_buckets)
+    if batch_elapsed_sec and targets_processed > 0:
+        startup_used = float(file_entry.get("startup_sec") or device_global.get("startup_sec") or 0)
+        measured_spt = max(0.05, (batch_elapsed_sec - startup_used) / targets_processed)
+        llm_obs = float(file_entry.get("llm_fraction_observed", 1.0))
+        if llm_obs < 0.02 and weighted_from_logs is not None:
+            measured_spt = weighted_from_logs
+        elif llm_obs < 0.02:
+            measured_spt = min(measured_spt, 0.45)
+        file_entry["sec_per_target"] = _blend_sec_per_target(
+            file_entry.get("sec_per_target"), measured_spt
+        )
+        profile_entry["sec_per_target"] = _blend_sec_per_target(
+            profile_entry.get("sec_per_target"), measured_spt
+        )
+    elif weighted_from_logs is not None:
+        file_entry["sec_per_target"] = _blend_sec_per_target(
+            file_entry.get("sec_per_target"), weighted_from_logs
+        )
+
+    for layer_key, layer in (
+        ("device_global", device_global),
+        ("file", file_entry),
+        ("profile", profile_entry),
+    ):
+        routes_out: dict[str, dict[str, float | int]] = dict(layer.get("routes") or {})
+        for route, vals in route_buckets.items():
+            if not vals:
+                continue
+            routes_out[route] = _merge_route_entry(routes_out.get(route), vals)
+        layer["routes"] = routes_out
+        if layer_key == "file":
+            by_file[filename] = file_entry
+        elif layer_key == "profile" and profile_key:
+            by_profile[profile_key] = profile_entry
+
+    snapshot = _compute_two_bucket_snapshot(
+        route_buckets,
+        routing_stats,
+        device_routes=device_global.get("routes") or {},
+        device_type=device_type,
+        cpu_slow=cpu_slow or {},
+        est_cfg=est_cfg or {},
     )
+    if snapshot["sample_size"] > 0:
+        file_entry["two_bucket"] = _merge_two_bucket(file_entry.get("two_bucket"), snapshot)
+        profile_entry["two_bucket"] = _merge_two_bucket(
+            profile_entry.get("two_bucket"), snapshot
+        )
+        by_file[filename] = file_entry
+        if profile_key:
+            by_profile[profile_key] = profile_entry
+
+    _save_calibration_store(base_dir, store)
 
 
-def _session_has_prior_targets(logs_dir: Path | None) -> bool:
+def _session_has_prior_targets(logs_dir: Path | None, filename: str | None = None) -> bool:
     if not logs_dir:
         return False
     session = logs_dir / SESSION_LOG_FILENAME
@@ -291,6 +476,13 @@ def _session_has_prior_targets(logs_dir: Path | None) -> bool:
         text = session.read_text(encoding="utf-8", errors="ignore")
     except OSError:
         return False
+    if filename:
+        if not _BATCH_START_FILE.search(text) or not any(
+            m.group(1) == filename for m in _BATCH_START_FILE.finditer(text)
+        ):
+            return False
+        route_buckets, _ = _parse_session_log_stats(session, filename=filename)
+        return any(route_buckets.values())
     return "TARGET DONE" in text
 
 
@@ -327,7 +519,12 @@ def _route_fractions_from_data(
     return _normalize_fractions({r: float(counts[r]) for r in KNOWN_ROUTES})
 
 
-def _route_fractions_from_logs(logs_dir: Path, *, min_samples: int = 8) -> dict[str, float] | None:
+def _route_fractions_from_logs(
+    logs_dir: Path,
+    *,
+    filename: str | None = None,
+    min_samples: int = 8,
+) -> dict[str, float] | None:
     if not logs_dir.is_dir():
         return None
     pattern = re.compile(r"route=(\w+)")
@@ -340,16 +537,25 @@ def _route_fractions_from_logs(logs_dir: Path, *, min_samples: int = 8) -> dict[
     )
     if not log_files:
         return None
-    # Current session uses a single log file; read it first.
     session = logs_dir / SESSION_LOG_FILENAME
     if session in log_files:
         log_files = [session] + [p for p in log_files if p != session]
-    for path in log_files[:3]:
+    active_file: str | None = None
+    for path in log_files[:2]:
         try:
             lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
         except OSError:
             continue
-        for line in lines[-2000:]:
+        for line in lines[-2500:]:
+            if "BATCH START" in line:
+                m = _BATCH_START_FILE.search(line)
+                active_file = m.group(1) if m else None
+                continue
+            if "BATCH END" in line:
+                active_file = None
+                continue
+            if filename and active_file != filename:
+                continue
             m = pattern.search(line)
             if not m or m.group(1) not in counts:
                 continue
@@ -384,13 +590,332 @@ def _default_sec_per_route(device_type: str, est_cfg: dict) -> dict[str, float]:
     return {r: float(cfg_map.get(r, base[r])) for r in KNOWN_ROUTES}
 
 
+def _llm_fraction(fracs: dict[str, float]) -> float:
+    return sum(float(fracs.get(r, 0.0)) for r in LLM_ROUTES)
+
+
+def _config_llm_fraction(est_cfg: dict) -> float:
+    cfg_frac = est_cfg.get("route_fractions") or DEFAULT_ROUTE_FRACTIONS
+    return _llm_fraction(cfg_frac)
+
+
+def _weighted_sec_per_from_routes(route_buckets: dict[str, list[float]]) -> float | None:
+    total = sum(len(v) for v in route_buckets.values())
+    if total <= 0:
+        return None
+    return round(
+        sum(statistics.median(v) * len(v) for v in route_buckets.values() if v) / total,
+        3,
+    )
+
+
+def _default_bucket_secs(
+    device_type: str,
+    cpu_slow: dict,
+    est_cfg: dict,
+    device_routes: dict[str, Any] | None = None,
+) -> tuple[float, float]:
+    """Retourne (sec_deberta, sec_llm) par defaut ou depuis calibration machine."""
+    routes = device_routes or {}
+    deberta_p50 = []
+    llm_p50 = []
+    for r in DEBERTA_ROUTES:
+        ent = routes.get(r)
+        if ent and ent.get("p50"):
+            deberta_p50.append(float(ent["p50"]))
+    for r in LLM_ROUTES:
+        ent = routes.get(r)
+        if ent and ent.get("p50"):
+            llm_p50.append(float(ent["p50"]))
+    if deberta_p50:
+        sec_deberta = statistics.median(deberta_p50)
+    elif device_type == "cpu" and cpu_slow:
+        sec_deberta = float(cpu_slow.get("sec_deberta", 1.0))
+    else:
+        sec_deberta = float(
+            (_default_sec_per_route(device_type, est_cfg).get("deberta_auto", 0.25))
+        )
+    if llm_p50:
+        sec_llm = statistics.median(llm_p50)
+    elif device_type == "cpu" and cpu_slow:
+        sec_llm = float(cpu_slow.get("sec_llm", 45.0))
+    else:
+        base = _default_sec_per_route(device_type, est_cfg)
+        sec_llm = statistics.mean([base[r] for r in LLM_ROUTES])
+    return round(sec_deberta, 3), round(sec_llm, 2)
+
+
+def _compute_two_bucket_snapshot(
+    route_buckets: dict[str, list[float]],
+    routing_stats: dict[str, int] | None,
+    *,
+    device_routes: dict[str, Any],
+    device_type: str,
+    cpu_slow: dict,
+    est_cfg: dict,
+) -> dict[str, Any]:
+    if routing_stats:
+        counts = {r: int(routing_stats.get(r, 0)) for r in KNOWN_ROUTES}
+    else:
+        counts = {r: len(route_buckets.get(r, [])) for r in KNOWN_ROUTES}
+    total = sum(counts.values())
+    llm_n = sum(counts.get(r, 0) for r in LLM_ROUTES)
+    deberta_n = sum(counts.get(r, 0) for r in DEBERTA_ROUTES)
+    if total <= 0:
+        llm_frac = _config_llm_fraction(est_cfg) if est_cfg else 0.12
+        sec_deberta, sec_llm = _default_bucket_secs(
+            device_type, cpu_slow, est_cfg, device_routes
+        )
+        return {
+            "sample_size": 0,
+            "llm_fraction": round(llm_frac, 4),
+            "deberta_fraction": round(1.0 - llm_frac, 4),
+            "sec_deberta": sec_deberta,
+            "sec_llm": sec_llm,
+            "llm_calls_observed": 0,
+            "deberta_calls_observed": 0,
+        }
+    llm_frac = llm_n / total
+    deberta_frac = deberta_n / total
+    deberta_vals = [v for r in DEBERTA_ROUTES for v in route_buckets.get(r, [])]
+    llm_vals = [v for r in LLM_ROUTES for v in route_buckets.get(r, [])]
+    sec_deberta, sec_llm = _default_bucket_secs(
+        device_type, cpu_slow, est_cfg, device_routes
+    )
+    if deberta_vals:
+        sec_deberta = round(float(statistics.median(deberta_vals)), 3)
+    if llm_vals:
+        sec_llm = round(float(statistics.median(llm_vals)), 2)
+    return {
+        "sample_size": total,
+        "llm_fraction": round(llm_frac, 4),
+        "deberta_fraction": round(deberta_frac, 4),
+        "sec_deberta": sec_deberta,
+        "sec_llm": sec_llm,
+        "llm_calls_observed": llm_n,
+        "deberta_calls_observed": deberta_n,
+    }
+
+
+def _merge_two_bucket(
+    prev: dict[str, Any] | None,
+    new: dict[str, Any],
+) -> dict[str, Any]:
+    if not prev or int(prev.get("sample_size", 0)) <= 0:
+        return dict(new)
+    prev_n = int(prev.get("sample_size", 0))
+    new_n = int(new.get("sample_size", 0))
+    total_n = min(prev_n + new_n, ESTIMATE_SAMPLE_MAX * 2)
+    w_prev = prev_n / (prev_n + new_n)
+    w_new = new_n / (prev_n + new_n)
+    return {
+        "sample_size": total_n,
+        "llm_fraction": round(
+            float(prev.get("llm_fraction", 0)) * w_prev
+            + float(new.get("llm_fraction", 0)) * w_new,
+            4,
+        ),
+        "deberta_fraction": round(
+            float(prev.get("deberta_fraction", 0)) * w_prev
+            + float(new.get("deberta_fraction", 0)) * w_new,
+            4,
+        ),
+        "sec_deberta": round(
+            float(prev.get("sec_deberta", 0.3)) * w_prev
+            + float(new.get("sec_deberta", 0.3)) * w_new,
+            3,
+        ),
+        "sec_llm": round(
+            float(prev.get("sec_llm", 45)) * w_prev + float(new.get("sec_llm", 45)) * w_new,
+            2,
+        ),
+        "llm_calls_observed": int(prev.get("llm_calls_observed", 0))
+        + int(new.get("llm_calls_observed", 0)),
+        "deberta_calls_observed": int(prev.get("deberta_calls_observed", 0))
+        + int(new.get("deberta_calls_observed", 0)),
+    }
+
+
+def _two_bucket_from_file_batches(
+    file_cal: dict[str, Any],
+    *,
+    device_routes: dict[str, Any],
+    device_type: str,
+    cpu_slow: dict,
+    est_cfg: dict,
+) -> dict[str, Any] | None:
+    """Reconstitue le modele deux buckets depuis les batches deja termines sur ce fichier."""
+    n_batches = int(file_cal.get("n_batches", 0))
+    if n_batches < 1:
+        return None
+    fracs = file_cal.get("route_fractions")
+    if not fracs:
+        return None
+    llm_frac = _llm_fraction(fracs)
+    if llm_frac < 0.02:
+        return None
+    deberta_frac = 1.0 - llm_frac
+    sec_deberta, sec_llm = _default_bucket_secs(
+        device_type, cpu_slow, est_cfg, device_routes
+    )
+    file_routes = file_cal.get("routes") or {}
+    deberta_p50 = [
+        float(file_routes[r]["p50"])
+        for r in DEBERTA_ROUTES
+        if file_routes.get(r, {}).get("p50")
+    ]
+    llm_p50 = [
+        float(file_routes[r]["p50"])
+        for r in LLM_ROUTES
+        if file_routes.get(r, {}).get("p50")
+    ]
+    if deberta_p50:
+        sec_deberta = float(statistics.median(deberta_p50))
+    if llm_p50:
+        sec_llm = float(statistics.median(llm_p50))
+    return {
+        "llm_fraction": llm_frac,
+        "deberta_fraction": deberta_frac,
+        "sec_deberta": sec_deberta,
+        "sec_llm": sec_llm,
+        "sample_size": max(10, n_batches * 15),
+        "source": f"batches reels fichier ({n_batches} batch(es))",
+        "tier": "fichier",
+    }
+
+
+def _resolve_two_bucket_estimate(
+    *,
+    n_remaining: int,
+    device_type: str,
+    cpu_slow: dict,
+    est_cfg: dict,
+    data: list,
+    target_is_annotated_fn: Callable[[dict], bool] | None,
+    logs_dir: Path | None,
+    filename: str | None,
+    file_cal: dict[str, Any] | None,
+    profile_cal: dict[str, Any] | None,
+    device_cal: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Modele: n_llm = N * p_llm, n_deberta = N * p_deberta, temps = somme ponderee."""
+    device_routes = (device_cal or {}).get("routes") or {}
+    sec_deberta, sec_llm = _default_bucket_secs(
+        device_type, cpu_slow, est_cfg, device_routes
+    )
+    llm_frac = _config_llm_fraction(est_cfg)
+    deberta_frac = 1.0 - llm_frac
+    has_device_times = any(
+        (device_routes.get(r) or {}).get("p50")
+        for r in (*DEBERTA_ROUTES, *LLM_ROUTES)
+    )
+    source = (
+        "repartition theorique (config) + temps machine calibres"
+        if has_device_times
+        else f"repartition et temps theoriques (config {device_type})"
+    )
+    sample_size = 0
+    tier = "theorique"
+
+    file_tb = (file_cal or {}).get("two_bucket")
+    legacy_tb = _two_bucket_from_file_batches(
+        file_cal or {},
+        device_routes=device_routes,
+        device_type=device_type,
+        cpu_slow=cpu_slow,
+        est_cfg=est_cfg,
+    )
+
+    file_tb_usable = (
+        file_tb
+        and int(file_tb.get("sample_size", 0)) >= 10
+        and float(file_tb.get("llm_fraction", 0)) >= 0.02
+    )
+
+    if file_tb_usable:
+        llm_frac = float(file_tb["llm_fraction"])
+        deberta_frac = float(file_tb.get("deberta_fraction", 1.0 - llm_frac))
+        sec_deberta = float(file_tb.get("sec_deberta", sec_deberta))
+        sec_llm = float(file_tb.get("sec_llm", sec_llm))
+        sample_size = int(file_tb["sample_size"])
+        source = f"batches reels fichier ({sample_size} cibles)"
+        tier = "fichier"
+    elif legacy_tb:
+        llm_frac = float(legacy_tb["llm_fraction"])
+        deberta_frac = float(legacy_tb["deberta_fraction"])
+        sec_deberta = float(legacy_tb["sec_deberta"])
+        sec_llm = float(legacy_tb["sec_llm"])
+        sample_size = int(legacy_tb["sample_size"])
+        source = legacy_tb["source"]
+        tier = legacy_tb["tier"]
+
+    n_llm = int(round(n_remaining * llm_frac))
+    n_deberta = max(0, n_remaining - n_llm)
+    processing_sec = n_llm * sec_llm + n_deberta * sec_deberta
+    sec_per = processing_sec / max(1, n_remaining)
+    formula = (
+        f"{n_llm} Qwen x {sec_llm:.0f}s + {n_deberta} DeBERTa x {sec_deberta:.1f}s"
+        f" ({int(round(llm_frac * 100))}% / {int(round(deberta_frac * 100))}%)"
+    )
+    return {
+        "llm_fraction": llm_frac,
+        "deberta_fraction": deberta_frac,
+        "sec_deberta": sec_deberta,
+        "sec_llm": sec_llm,
+        "n_llm": n_llm,
+        "n_deberta": n_deberta,
+        "processing_sec": processing_sec,
+        "sec_per_target": round(sec_per, 3),
+        "sample_size": sample_size,
+        "source": source,
+        "tier": tier,
+        "formula": formula,
+    }
+
+
+def _first_run_sec_per_target(device_type: str, cpu_slow: dict, est_cfg: dict) -> float | None:
+    """Heuristique materiel pour le tout premier batch (aucune calibration)."""
+    sec_d, sec_l = _default_bucket_secs(device_type, cpu_slow, est_cfg)
+    llm_frac = float(cpu_slow.get("llm_fraction", 0.18)) if cpu_slow else _config_llm_fraction(est_cfg)
+    return round((1.0 - llm_frac) * sec_d + llm_frac * sec_l, 2)
+
+
+def _route_entry_usable(entry: dict[str, Any] | None, *, min_n: int) -> bool:
+    if not entry:
+        return False
+    return int(entry.get("n", 0)) >= min_n
+
+
+def _pick_route_calibration(
+    route: str,
+    *,
+    file_cal: dict[str, Any] | None,
+    profile_cal: dict[str, Any] | None,
+    device_cal: dict[str, Any] | None,
+) -> tuple[dict[str, Any] | None, str]:
+    file_routes = (file_cal or {}).get("routes") or {}
+    profile_routes = (profile_cal or {}).get("routes") or {}
+    device_routes = (device_cal or {}).get("routes") or {}
+    if _route_entry_usable(file_routes.get(route), min_n=2):
+        return file_routes[route], "fichier"
+    if _route_entry_usable(profile_routes.get(route), min_n=4):
+        return profile_routes[route], "profil structurel"
+    if _route_entry_usable(device_routes.get(route), min_n=8):
+        return device_routes[route], "machine"
+    return None, "defaut"
+
+
 def _blend_route_seconds(
     default_sec: float,
     *,
     empirical: float | None = None,
     calibrated: dict[str, float | int] | None = None,
+    measured_sec_per_target: float | None = None,
+    route_fraction: float = 0.0,
 ) -> float:
     values: list[float] = []
+    if measured_sec_per_target is not None and route_fraction > 0:
+        values.append(measured_sec_per_target * route_fraction * 2.5)
     if empirical is not None:
         values.append(empirical)
     if calibrated:
@@ -402,38 +927,63 @@ def _blend_route_seconds(
     if not values:
         return default_sec
     blended = statistics.mean(values)
-    return round(min(blended, default_sec * 1.15), 3)
+    cap = default_sec * 2.5 if measured_sec_per_target else default_sec * 1.25
+    return round(min(max(blended, default_sec * 0.5), cap), 3)
 
 
 def _resolve_sec_per_route(
     device_type: str,
     est_cfg: dict,
     logs_dir: Path | None,
-    calibration: dict[str, Any] | None,
+    *,
+    filename: str | None,
+    file_cal: dict[str, Any] | None,
+    profile_cal: dict[str, Any] | None,
+    device_cal: dict[str, Any] | None,
+    fractions: dict[str, float],
+    measured_sec_per_target: float | None,
 ) -> tuple[dict[str, float], str]:
     base = _default_sec_per_route(device_type, est_cfg)
-    empirical = _empirical_route_stats(logs_dir, min_samples=3) if logs_dir else None
-    cal_routes = (calibration or {}).get("routes") or {}
+    empirical = (
+        _empirical_route_stats(logs_dir, filename=filename, min_samples=3)
+        if logs_dir and filename
+        else None
+    )
     merged = dict(base)
-    used_cal = False
-    used_logs = False
+    sources: set[str] = set()
     for route in KNOWN_ROUTES:
+        cal_entry, src = _pick_route_calibration(
+            route,
+            file_cal=file_cal,
+            profile_cal=profile_cal,
+            device_cal=device_cal,
+        )
         merged[route] = _blend_route_seconds(
             base[route],
             empirical=(empirical or {}).get(route),
-            calibrated=cal_routes.get(route),
+            calibrated=cal_entry,
+            measured_sec_per_target=measured_sec_per_target,
+            route_fraction=fractions.get(route, 0.0),
         )
         if route in (empirical or {}):
-            used_logs = True
-        if route in cal_routes:
-            used_cal = True
-    if used_cal and used_logs:
-        return merged, "calibration locale + session"
-    if used_cal:
-        return merged, "calibration locale"
-    if used_logs:
-        return merged, "session en cours"
-    return merged, f"defaut {_device_label(device_type).lower()}"
+            sources.add("session fichier")
+        if cal_entry:
+            sources.add(src)
+    if measured_sec_per_target and file_cal:
+        sources.add("mesure fichier")
+    if "fichier" in sources or "mesure fichier" in sources:
+        label = "calibration fichier"
+    elif "profil structurel" in sources:
+        label = "profil structurel"
+    elif "machine" in sources:
+        label = "calibration machine"
+    elif "session fichier" in sources:
+        label = "session fichier"
+    else:
+        label = f"defaut {_device_label(device_type).lower()}"
+    if len(sources) > 1:
+        label += " + " + ", ".join(sorted(s for s in sources if s not in label))
+    return merged, label
 
 
 def _resolve_model_load_sec(
@@ -441,19 +991,29 @@ def _resolve_model_load_sec(
     device_type: str,
     est_cfg: dict,
     logs_dir: Path | None,
-    calibration: dict[str, Any] | None,
+    filename: str | None,
+    file_cal: dict[str, Any] | None,
+    profile_cal: dict[str, Any] | None,
+    device_cal: dict[str, Any] | None,
     models_warm: bool,
 ) -> tuple[float, str]:
     if models_warm:
         warm = float(est_cfg.get("model_load_sec_warm", 2))
         return warm, "modeles deja charges"
     startup_values: list[float] = []
-    if calibration and calibration.get("startup_sec"):
-        startup_values.append(float(calibration["startup_sec"]))
-    if logs_dir:
-        _, delays = _parse_session_log_stats(logs_dir / SESSION_LOG_FILENAME)
+    for layer, label in (
+        (file_cal, "fichier"),
+        (profile_cal, "profil"),
+        (device_cal, "machine"),
+    ):
+        if layer and layer.get("startup_sec"):
+            startup_values.append(float(layer["startup_sec"]))
+    if logs_dir and filename:
+        _, delays = _parse_session_log_stats(
+            logs_dir / SESSION_LOG_FILENAME, filename=filename
+        )
         if delays:
-            startup_values.append(statistics.median(delays[-5:]))
+            startup_values.append(statistics.median(delays[-3:]))
     if startup_values:
         return round(statistics.mean(startup_values), 1), "demarrage mesure"
     if device_type == "cpu":
@@ -467,13 +1027,21 @@ def _resolve_route_fractions(
     est_cfg: dict,
     *,
     target_is_annotated_fn: Callable[[dict], bool] | None,
+    filename: str | None,
+    file_cal: dict[str, Any] | None,
+    profile_cal: dict[str, Any] | None,
 ) -> tuple[dict[str, float], str]:
     from_data = _route_fractions_from_data(data, target_is_annotated_fn=target_is_annotated_fn)
     if from_data:
-        return from_data, "corpus annote"
-    from_logs = _route_fractions_from_logs(logs_dir) if logs_dir else None
-    if from_logs:
-        return from_logs, "logs locaux"
+        return from_data, "corpus annote (fichier)"
+    if file_cal and file_cal.get("route_fractions") and int(file_cal.get("n_batches", 0)) >= 1:
+        return _normalize_fractions(dict(file_cal["route_fractions"])), "historique fichier"
+    if profile_cal and profile_cal.get("route_fractions") and int(profile_cal.get("n_batches", 0)) >= 2:
+        return _normalize_fractions(dict(profile_cal["route_fractions"])), "profil structurel"
+    if logs_dir and filename:
+        from_logs = _route_fractions_from_logs(logs_dir, filename=filename)
+        if from_logs:
+            return from_logs, "logs fichier"
     cfg_frac = est_cfg.get("route_fractions") or {}
     if cfg_frac:
         return _normalize_fractions({r: float(cfg_frac.get(r, 0)) for r in KNOWN_ROUTES}), "config"
@@ -501,8 +1069,13 @@ def _format_route_breakdown(
     return ", ".join(parts)
 
 
-def _empirical_route_stats(logs_dir: Path, *, min_samples: int = 5) -> dict[str, float] | None:
-    """Durees medianes par route cascade depuis les logs locaux."""
+def _empirical_route_stats(
+    logs_dir: Path,
+    *,
+    filename: str | None = None,
+    min_samples: int = 5,
+) -> dict[str, float] | None:
+    """Durees medianes par route depuis les logs (filtre par fichier si precise)."""
     if not logs_dir.is_dir():
         return None
     pattern = re.compile(r"route=(\w+).*(?:duration|duree)=([\d.]+)s")
@@ -514,16 +1087,25 @@ def _empirical_route_stats(logs_dir: Path, *, min_samples: int = 5) -> dict[str,
     )
     if not log_files:
         return None
-    # Current session uses a single log file; read it first.
     session = logs_dir / SESSION_LOG_FILENAME
     if session in log_files:
         log_files = [session] + [p for p in log_files if p != session]
-    for path in log_files[:3]:
+    active_file: str | None = None
+    for path in log_files[:2]:
         try:
             lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
         except OSError:
             continue
-        for line in lines[-1200:]:
+        for line in lines[-1500:]:
+            if "BATCH START" in line:
+                m = _BATCH_START_FILE.search(line)
+                active_file = m.group(1) if m else None
+                continue
+            if "BATCH END" in line:
+                active_file = None
+                continue
+            if filename and active_file != filename:
+                continue
             m = pattern.search(line)
             if not m:
                 continue
@@ -638,14 +1220,27 @@ def estimate_batch(
     device_type: str | None = None,
     models_warm: bool = False,
     base_dir: Path | None = None,
+    filename: str | None = None,
 ) -> dict[str, Any]:
     run_cfg = cfg.get("run_model", {})
     cpu_slow = run_cfg.get("cpu_slow") or {}
     est_cfg = run_cfg.get("estimate") or {}
     device = device_type or ("cpu" if is_cpu else "cuda")
     is_cpu = device == "cpu"
-    warm = models_warm or _session_has_prior_targets(logs_dir) or models_warm_in_session()
-    calibration = _load_calibration(base_dir, device)
+    file_profile = compute_file_profile(data)
+    store = _load_calibration_store(base_dir, device)
+    file_cal = (store.get("by_file") or {}).get(filename) if filename else None
+    profile_cal = (store.get("by_profile") or {}).get(file_profile["profile_key"])
+    device_cal = store.get("device_global") or {}
+
+    file_warm = (
+        models_warm
+        or models_warm_in_session()
+        or _session_has_prior_targets(logs_dir, filename)
+    )
+    warm = file_warm or (
+        not filename and _session_has_prior_targets(logs_dir)
+    )
 
     range_stats = count_range_annotation_stats(
         data,
@@ -665,28 +1260,58 @@ def estimate_batch(
     )
 
     fractions, frac_source = _resolve_route_fractions(
-        data, logs_dir, est_cfg, target_is_annotated_fn=target_is_annotated_fn
+        data,
+        logs_dir,
+        est_cfg,
+        target_is_annotated_fn=target_is_annotated_fn,
+        filename=filename,
+        file_cal=file_cal,
+        profile_cal=profile_cal,
     )
-    sec_per_route, sec_source = _resolve_sec_per_route(
-        device, est_cfg, logs_dir, calibration
+
+    bucket = _resolve_two_bucket_estimate(
+        n_remaining=n_remaining,
+        device_type=device,
+        cpu_slow=cpu_slow,
+        est_cfg=est_cfg,
+        data=data,
+        target_is_annotated_fn=target_is_annotated_fn,
+        logs_dir=logs_dir,
+        filename=filename,
+        file_cal=file_cal,
+        profile_cal=profile_cal,
+        device_cal=device_cal,
     )
+    calibration_tier = bucket["tier"]
+    sec_per = bucket["sec_per_target"]
+    sec_source = bucket["source"]
+
     model_load, load_source = _resolve_model_load_sec(
         device_type=device,
         est_cfg=est_cfg,
         logs_dir=logs_dir,
-        calibration=calibration,
+        filename=filename,
+        file_cal=file_cal,
+        profile_cal=profile_cal,
+        device_cal=device_cal,
         models_warm=warm,
     )
 
-    sec_per = sum(fractions[r] * sec_per_route[r] for r in KNOWN_ROUTES)
     ref_overhead = float(est_cfg.get("sec_per_ref_overhead", 0.15))
-    total_sec = model_load + n_remaining * sec_per + n_refs * ref_overhead
+    total_sec = model_load + bucket["processing_sec"] + n_refs * ref_overhead
 
-    breakdown = _format_route_breakdown(fractions, sec_per_route)
+    sec_per_route = _default_sec_per_route(device, est_cfg)
+    frac_display = {
+        r: bucket["deberta_fraction"] / len(DEBERTA_ROUTES)
+        for r in DEBERTA_ROUTES
+    }
+    for r in LLM_ROUTES:
+        frac_display[r] = bucket["llm_fraction"] / len(LLM_ROUTES)
+    breakdown = _format_route_breakdown(frac_display, sec_per_route)
     hw = _device_label(device)
     method_label = (
-        f"{hw} — repartition ({frac_source}) : {breakdown} ; "
-        f"~{sec_per:.1f} s/cible ({sec_source}) ; "
+        f"{hw} — {calibration_tier} — {bucket['formula']} ; "
+        f"echantillon: {bucket['source']} ; "
         f"demarrage ~{model_load:.0f}s ({load_source})"
     )
 
@@ -705,15 +1330,17 @@ def estimate_batch(
         warning = (warning + " " if warning else "") + (
             "All targets in this range are already annotated."
         )
+    if calibration_tier == "theorique":
+        note = (
+            "Premier lancement : repartition theorique (config 12 %) "
+            "et temps calibres machine ou valeurs par defaut."
+        )
+        warning = (warning + " " if warning else "") + note
 
-    route_fractions_pct = {r: round(fractions[r] * 100, 1) for r in KNOWN_ROUTES}
+    route_fractions_pct = {r: round(frac_display.get(r, 0) * 100, 1) for r in KNOWN_ROUTES}
     route_seconds = {r: round(sec_per_route[r], 2) for r in KNOWN_ROUTES}
-    llm_fraction = round(
-        sum(fractions[r] for r in ("consensus", "human", "rejected")) * 100, 1
-    )
-    deberta_fraction = round(
-        sum(fractions[r] for r in ("deberta_auto", "deberta_ambiguous")) * 100, 1
-    )
+    llm_fraction = round(bucket["llm_fraction"] * 100, 1)
+    deberta_fraction = round(bucket["deberta_fraction"] * 100, 1)
 
     return {
         "refs": n_refs,
@@ -722,8 +1349,17 @@ def estimate_batch(
         "estimated_seconds": round(total_sec),
         "estimated_label": _format_elapsed(total_sec),
         "sec_per_target": round(sec_per, 2),
-        "estimate_method": f"{frac_source}+{sec_source}+{load_source}",
+        "estimate_method": f"{calibration_tier}+{bucket['source']}+{load_source}",
         "estimate_detail": method_label,
+        "estimate_formula": bucket["formula"],
+        "estimate_llm_calls": bucket["n_llm"],
+        "estimate_deberta_calls": bucket["n_deberta"],
+        "sec_deberta": bucket["sec_deberta"],
+        "sec_llm": bucket["sec_llm"],
+        "estimate_sample_size": bucket["sample_size"],
+        "calibration_tier": calibration_tier,
+        "file_profile": file_profile,
+        "filename": filename,
         "route_fractions_pct": route_fractions_pct,
         "route_seconds": route_seconds,
         "fraction_source": frac_source,
@@ -1353,10 +1989,18 @@ def _run_batch_inner(
         )
         global _session_models_warm
         device_type = report.get("hardware", {}).get("gpu", {}).get("device", "cpu")
+        batch_elapsed = time.monotonic() - batch_start
         refresh_estimate_calibration(
             base_dir=base_dir,
             logs_dir=base_dir / "logs",
             device_type=device_type,
+            filename=original_filename,
+            file_profile=compute_file_profile(data),
+            routing_stats=routing_stats,
+            batch_elapsed_sec=batch_elapsed,
+            targets_processed=targets_annotated_count,
+            cpu_slow=cpu_slow,
+            est_cfg=run_cfg.get("estimate") or {},
         )
         _session_models_warm = True
         _finish(

@@ -1129,6 +1129,7 @@ def api_auto_annotate_estimate():
         device_type=device,
         models_warm=models_warm_in_session(),
         base_dir=BASE_DIR,
+        filename=original_filename,
     )
     return jsonify(est)
 
