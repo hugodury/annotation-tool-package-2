@@ -9,6 +9,7 @@
   "deberta_model_path": "models/fine_tuned_deberta_base_expanded",
   "score_max": 0.8,
   "score_not_related_cutoff": 0.2,
+  "score_not_related_max": 0.4,
   "similarity_defaults": {
     "not_related": 0.15,
     "against": 0.65,
@@ -42,13 +43,15 @@
       "model_load_sec_warm": 2,
       "sec_per_ref_overhead": 0.15,
       "route_fractions": {
-        "deberta_auto": 0.68,
-        "deberta_ambiguous": 0.2,
-        "consensus": 0.06,
-        "human": 0.04,
-        "rejected": 0.02
+        "llm_auto": 0.9,
+        "deberta_auto": 0.0,
+        "deberta_ambiguous": 0.0,
+        "consensus": 0.0,
+        "human": 0.1,
+        "rejected": 0.0
       },
       "route_sec_cpu": {
+        "llm_auto": 14,
         "deberta_auto": 0.3,
         "deberta_ambiguous": 0.35,
         "consensus": 16,
@@ -56,6 +59,7 @@
         "rejected": 15
       },
       "route_sec_gpu": {
+        "llm_auto": 7,
         "deberta_auto": 0.2,
         "deberta_ambiguous": 0.25,
         "consensus": 8,

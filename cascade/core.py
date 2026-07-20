@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
-import socket
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -30,20 +30,126 @@ class BatchCancelledError(Exception):
 
 CancelCheck = Callable[[], bool] | None
 
-OLLAMA_READ_POLL_SEC = 0.4
+CASCADE_MODE_QWEN_ONLY = "qwen_only"
+CASCADE_MODE_DEBERTA_QWEN = "deberta_qwen"
+CASCADE_MODE_COMPARE = "compare"
+VALID_CASCADE_MODES = frozenset({
+    CASCADE_MODE_QWEN_ONLY,
+    CASCADE_MODE_DEBERTA_QWEN,
+    CASCADE_MODE_COMPARE,
+})
+
+AUTO_ANNOTATE_ROUTES = frozenset({
+    "llm_auto",
+    "deberta_auto",
+    "deberta_ambiguous",
+    "consensus",
+    "compare_agree",
+})
+
+# Intervalle de verification de l'annulation cote thread principal (s).
+OLLAMA_CANCEL_POLL_SEC = 0.2
 
 
-def _http_response_socket(resp: Any):
-    fp = getattr(resp, "fp", None)
-    if fp is None:
-        return None
-    return getattr(fp, "_sock", None) or getattr(getattr(fp, "raw", None), "_sock", None)
+def effective_related(route_out: dict) -> str | None:
+    """Label final auto-annote pour un resultat de pipeline, ou None."""
+    route = route_out.get("route")
+    if route in {
+        "llm_auto",
+        "deberta_auto",
+        "deberta_ambiguous",
+        "consensus",
+        "compare_agree",
+    }:
+        return route_out.get("related")
+    return None
 
 
-def _set_http_read_timeout(resp: Any, timeout_sec: float) -> None:
-    sock = _http_response_socket(resp)
-    if sock is not None:
-        sock.settimeout(timeout_sec)
+def cascade_decision_source(cascade_out: dict) -> str:
+    """Qui a produit le label final côté cascade: 'deberta' | 'qwen' | 'unknown'."""
+    route = cascade_out.get("route")
+    if route in {"deberta_auto", "deberta_ambiguous"}:
+        return "deberta"
+    if route == "consensus":
+        return "qwen"
+    if route in {"human", "rejected"}:
+        if cascade_out.get("llm_pred") is not None:
+            return "qwen"
+        if cascade_out.get("deberta_pred") is not None:
+            return "deberta"
+    if cascade_out.get("llm_pred") is not None:
+        return "qwen"
+    if cascade_out.get("deberta_pred") is not None:
+        return "deberta"
+    return "unknown"
+
+
+def cascade_source_label(source: str | None) -> str:
+    if source == "deberta":
+        return "DeBERTa"
+    if source == "qwen":
+        return "Qwen"
+    return "?"
+
+
+def build_pipeline_compare(qwen_out: dict, cascade_out: dict) -> dict:
+    qwen_rel = effective_related(qwen_out)
+    cascade_rel = effective_related(cascade_out)
+    agree = (
+        qwen_rel is not None
+        and cascade_rel is not None
+        and qwen_rel == cascade_rel
+    )
+    qwen_dur = qwen_out.get("duration_s")
+    cascade_dur = cascade_out.get("duration_s")
+    faster = None
+    delta_s = None
+    if isinstance(qwen_dur, (int, float)) and isinstance(cascade_dur, (int, float)):
+        delta_s = round(abs(float(qwen_dur) - float(cascade_dur)), 3)
+        if abs(float(qwen_dur) - float(cascade_dur)) < 1e-9:
+            faster = "tie"
+        else:
+            faster = "cascade" if float(qwen_dur) > float(cascade_dur) else "qwen"
+    source = cascade_decision_source(cascade_out)
+    source_label = cascade_source_label(source)
+    return {
+        "qwen_only": {
+            "route": qwen_out.get("route"),
+            "related": qwen_rel,
+            "llm_pred": qwen_out.get("llm_pred"),
+            "llm_sim": qwen_out.get("llm_sim"),
+            "llm_error": qwen_out.get("llm_error"),
+            "duration_s": qwen_dur,
+        },
+        "deberta_qwen": {
+            "route": cascade_out.get("route"),
+            "related": cascade_rel,
+            "deberta_pred": cascade_out.get("deberta_pred"),
+            "deberta_conf": cascade_out.get("deberta_conf"),
+            "deberta_sim": cascade_out.get("deberta_sim"),
+            "similarity_annotation": cascade_out.get("similarity_annotation"),
+            "llm_pred": cascade_out.get("llm_pred"),
+            "llm_sim": cascade_out.get("llm_sim"),
+            "llm_error": cascade_out.get("llm_error"),
+            "duration_s": cascade_dur,
+            "decision_source": source,
+            "decision_source_label": source_label,
+        },
+        "agree": agree,
+        "faster": faster,
+        "duration_delta_s": delta_s,
+        "cascade_source": source,
+        "cascade_source_label": source_label,
+    }
+
+
+def normalize_cascade_mode(mode: str | None) -> str:
+    value = (mode or CASCADE_MODE_QWEN_ONLY).strip().lower()
+    if value in VALID_CASCADE_MODES:
+        return value
+    return CASCADE_MODE_QWEN_ONLY
+
+
 def load_config() -> dict:
     with open(CASCADE_DIR / "config.json", encoding="utf-8") as f:
         cfg = json.load(f)
@@ -89,17 +195,40 @@ def _safe_float(value: Any) -> float | None:
         return float(m.group()) if m else None
 
 
+def enforce_label_sim_consistency(label: str, score: float | None) -> str:
+    """Aligne related et similarity (garde-fou post-LLM / post-SBERT).
+
+    Logique metier :
+    - sim <= 0.2            => not_related obligatoire
+    - 0.2 < sim < 0.4       => not_related encore autorise (lien faible)
+    - sim >= 0.4            => not_related interdit -> undetermined
+      (supporting/against laisses tels quels s'ils viennent du LLM)
+
+    Ne convertit JAMAIS vers supporting : undetermined n'est pas supporting.
+    """
+    cfg = load_config()
+    cutoff = float(cfg["score_not_related_cutoff"])
+    nr_max = float(cfg.get("score_not_related_max", 0.4))
+    label = label if label in VALID_LABELS else "undetermined"
+    s = _safe_float(score)
+    if s is None:
+        return label
+    if s <= cutoff:
+        return "not_related"
+    if label == "not_related" and s >= nr_max:
+        return "undetermined"
+    return label
+
+
 def postprocess_prediction(label: str, score: Any) -> tuple[str, float]:
     cfg = load_config()
     score_max = cfg["score_max"]
-    cutoff = cfg["score_not_related_cutoff"]
     label = label if label in VALID_LABELS else "undetermined"
     s = _safe_float(score)
     if s is None:
         s = 0.5
     s = max(0.0, min(score_max, s))
-    if s <= cutoff:
-        label = "not_related"
+    label = enforce_label_sim_consistency(label, s)
     return label, round(s, 3)
 
 
@@ -160,8 +289,22 @@ def build_prompt(prompt_id: str, anchor: str, target: str, few_shot: list[dict])
     protocol = load_protocol()
     if prompt_id == "P1":
         return f"{protocol}\n\n---\nAnnotate:\n{pair}\nJSON only."
+    # P3: protocole + few-shot + rappel anti-biais supporting
+    reminder = (
+        "HARD RULES before answering:\n"
+        "- similarity <= 0.2 => related MUST be not_related.\n"
+        "- similarity around 0.3 (0.2 < sim < 0.4) => not_related is still allowed if the link is weak.\n"
+        "- similarity >= 0.4 => NEVER not_related "
+        "(use undetermined, supporting, or against only).\n"
+        "- Do NOT confuse supporting and undetermined.\n"
+        "- Same topic/event or high similarity is NOT enough for supporting.\n"
+        "- supporting only if 100% sure of the same claim/POV; "
+        "if any doubt => undetermined.\n"
+        "- Never default to supporting.\n"
+    )
     return (
-        f"{protocol}\n\nFew-shot examples:\n{examples}\n---\nAnnotate:\n{pair}\nJSON only."
+        f"{protocol}\n\nFew-shot examples:\n{examples}\n---\n"
+        f"{reminder}\nAnnotate:\n{pair}\nJSON only."
     )
 
 
@@ -190,32 +333,56 @@ def ollama_generate(
         headers={"Content-Type": "application/json"},
     )
     parts: list[str] = []
-    resp = urllib.request.urlopen(req, timeout=timeout)
-    _set_http_read_timeout(resp, OLLAMA_READ_POLL_SEC)
-    try:
-        while True:
-            if should_cancel and should_cancel():
-                raise BatchCancelledError("Batch cancelled by user.")
-            try:
-                line = resp.readline()
-            except socket.timeout:
-                continue
-            if not line:
-                break
-            line = line.decode("utf-8").strip()
-            if not line:
-                continue
-            obj = json.loads(line)
-            chunk = obj.get("response")
-            if chunk:
-                parts.append(chunk)
-            if obj.get("done"):
-                break
-    finally:
+
+    def _stream() -> None:
+        # Lecture bloquante ligne par ligne. On NE fixe PAS de timeout de lecture
+        # sous-seconde: sur CPU l'intervalle entre deux tokens depasse souvent la
+        # seconde (surtout au 1er appel, chargement du modele), ce qui corrompait
+        # le flux HTTP ("cannot read from timed out object") et faisait echouer
+        # l'appel a tort. urlopen(timeout) borne toujours la duree totale.
+        resp = urllib.request.urlopen(req, timeout=timeout)
         try:
-            resp.close()
-        except OSError:
-            pass
+            for raw_line in resp:
+                if should_cancel and should_cancel():
+                    break
+                line = raw_line.decode("utf-8").strip()
+                if not line:
+                    continue
+                obj = json.loads(line)
+                chunk = obj.get("response")
+                if chunk:
+                    parts.append(chunk)
+                if obj.get("done"):
+                    break
+        finally:
+            try:
+                resp.close()
+            except OSError:
+                pass
+
+    # Sans annulation demandee: lecture directe (bloquante).
+    if not should_cancel:
+        _stream()
+        return "".join(parts)
+
+    # Avec annulation: lecture dans un thread worker, l'annulation est verifiee
+    # cote thread principal toutes les OLLAMA_CANCEL_POLL_SEC secondes.
+    err: list[BaseException] = []
+
+    def _work() -> None:
+        try:
+            _stream()
+        except BaseException as e:  # noqa: BLE001 - propage au thread principal
+            err.append(e)
+
+    worker = threading.Thread(target=_work, daemon=True)
+    worker.start()
+    while worker.is_alive():
+        if should_cancel():
+            raise BatchCancelledError("Batch cancelled by user.")
+        worker.join(OLLAMA_CANCEL_POLL_SEC)
+    if err:
+        raise err[0]
     return "".join(parts)
 
 
@@ -224,7 +391,17 @@ class CascadeEngine:
         self.cfg = load_config()
         self.llm_cfg = self.cfg["llm"]
         self.few_shot = load_few_shot()
-        self._load_deberta()
+        # DeBERTa charge a la demande (mode deberta_qwen). SBERT reste utilise pour la similarite.
+        self.device = (
+            "mps"
+            if torch.backends.mps.is_available()
+            else ("cuda" if torch.cuda.is_available() else "cpu")
+        )
+        self.deberta = None
+
+    def ensure_deberta(self) -> None:
+        if self.deberta is None:
+            self._load_deberta()
 
     def _load_deberta(self):
         model_path = REPO / self.cfg["deberta_model_path"]
@@ -233,13 +410,7 @@ class CascadeEngine:
                 f"Modele DeBERTa manquant: {model_path}. "
                 "Executez: python scripts/setup.py"
             )
-        device = (
-            "mps"
-            if torch.backends.mps.is_available()
-            else ("cuda" if torch.cuda.is_available() else "cpu")
-        )
-        self.device = device
-        self.deberta = CrossEncoder(str(model_path), device=device)
+        self.deberta = CrossEncoder(str(model_path), device=self.device)
 
     def deberta_predict(
         self,
@@ -249,6 +420,7 @@ class CascadeEngine:
     ) -> tuple[str, float, float]:
         if should_cancel and should_cancel():
             raise BatchCancelledError("Batch cancelled by user.")
+        self.ensure_deberta()
 
         if not should_cancel:
             return self._deberta_predict_impl(anchor, target)
@@ -262,7 +434,7 @@ class CascadeEngine:
             except BaseException as e:
                 err.append(e)
 
-        worker = __import__("threading").Thread(target=_work, daemon=True)
+        worker = threading.Thread(target=_work, daemon=True)
         worker.start()
         while worker.is_alive():
             if should_cancel():
@@ -333,7 +505,107 @@ class CascadeEngine:
         target: str,
         tau_auto: float | None = None,
         should_cancel: CancelCheck = None,
+        cascade_mode: str | None = None,
     ) -> dict:
+        mode = normalize_cascade_mode(cascade_mode)
+        if mode == CASCADE_MODE_DEBERTA_QWEN:
+            return self._route_deberta_qwen(
+                anchor, target, tau_auto=tau_auto, should_cancel=should_cancel
+            )
+        if mode == CASCADE_MODE_COMPARE:
+            return self._route_compare(
+                anchor, target, tau_auto=tau_auto, should_cancel=should_cancel
+            )
+        return self._route_qwen_only(anchor, target, should_cancel=should_cancel)
+
+    def _route_compare(
+        self,
+        anchor: str,
+        target: str,
+        tau_auto: float | None = None,
+        should_cancel: CancelCheck = None,
+    ) -> dict:
+        """Execute les deux pipelines et compare les labels auto-annotables."""
+        qwen_start = time.monotonic()
+        qwen_out = self._route_qwen_only(anchor, target, should_cancel=should_cancel)
+        qwen_out["duration_s"] = round(time.monotonic() - qwen_start, 3)
+
+        cascade_start = time.monotonic()
+        cascade_out = self._route_deberta_qwen(
+            anchor, target, tau_auto=tau_auto, should_cancel=should_cancel
+        )
+        cascade_out["duration_s"] = round(time.monotonic() - cascade_start, 3)
+
+        compare = build_pipeline_compare(qwen_out, cascade_out)
+        result = self._empty_route_result()
+        result["pipeline_compare"] = compare
+        result["qwen_only_result"] = qwen_out
+        result["deberta_qwen_result"] = cascade_out
+
+        if compare["agree"]:
+            agreed = compare["qwen_only"]["related"]
+            result.update(
+                route="compare_agree",
+                related=agreed,
+                similarity_annotation=qwen_out.get("llm_sim"),
+                llm_pred=qwen_out.get("llm_pred"),
+                llm_conf=qwen_out.get("llm_conf"),
+                llm_sim=qwen_out.get("llm_sim"),
+                deberta_pred=cascade_out.get("deberta_pred"),
+                deberta_conf=cascade_out.get("deberta_conf"),
+            )
+        else:
+            result.update(
+                route="compare_disagree",
+                related=None,
+                similarity_annotation=None,
+                llm_pred=qwen_out.get("llm_pred"),
+                llm_conf=qwen_out.get("llm_conf"),
+                deberta_pred=cascade_out.get("deberta_pred"),
+                deberta_conf=cascade_out.get("deberta_conf"),
+                requires_human_review=True,
+            )
+        return result
+
+    def _route_qwen_only(
+        self,
+        anchor: str,
+        target: str,
+        should_cancel: CancelCheck = None,
+    ) -> dict:
+        """Chaque cible passe par le LLM (Qwen P3)."""
+        result = self._empty_route_result()
+
+        llm_label, llm_score, llm_conf, err = self.llm_predict(
+            anchor, target, should_cancel=should_cancel
+        )
+        result["llm_pred"] = llm_label
+        result["llm_conf"] = round(llm_conf, 4)
+        result["llm_sim"] = llm_score
+
+        if err:
+            result["llm_error"] = err
+            result.update(
+                route="human",
+                requires_human_review=True,
+            )
+            return result
+
+        result.update(
+            route="llm_auto",
+            related=llm_label,
+            similarity_annotation=llm_score,
+        )
+        return result
+
+    def _route_deberta_qwen(
+        self,
+        anchor: str,
+        target: str,
+        tau_auto: float | None = None,
+        should_cancel: CancelCheck = None,
+    ) -> dict:
+        """Cascade DeBERTa -> Qwen (P3) -> humain / rejet."""
         if tau_auto is None:
             tau_auto = self.cfg["tau_deberta_auto"]
         tau_reject = self.cfg["tau_disagreement_reject"]
@@ -342,22 +614,12 @@ class CascadeEngine:
             anchor, target, should_cancel=should_cancel
         )
 
-        result = {
-            "llm_model": self.llm_cfg["label"],
-            "llm_prompt": self.llm_cfg["prompt"],
-            "deberta_pred": deberta_label,
-            "deberta_conf": round(deberta_conf, 4),
-            "deberta_sim": deberta_sim,
-            "llm_pred": None,
-            "llm_conf": None,
-            "llm_sim": None,
-            "route": None,
-            "related": None,
-            "similarity_annotation": None,
-            "requires_human_review": False,
-            "rejected": False,
-            "error": None,
-        }
+        result = self._empty_route_result()
+        result.update(
+            deberta_pred=deberta_label,
+            deberta_conf=round(deberta_conf, 4),
+            deberta_sim=deberta_sim,
+        )
 
         if deberta_conf >= tau_auto:
             result.update(
@@ -367,7 +629,9 @@ class CascadeEngine:
             )
             return result
 
-        llm_target_classes = frozenset(self.cfg.get("llm_target_classes", ["supporting", "undetermined"]))
+        llm_target_classes = frozenset(
+            self.cfg.get("llm_target_classes", ["supporting", "undetermined"])
+        )
 
         if deberta_label not in llm_target_classes:
             result.update(
@@ -386,12 +650,7 @@ class CascadeEngine:
 
         if err:
             result["llm_error"] = err
-            result.update(
-                route="human",
-                related=deberta_label,
-                similarity_annotation=deberta_sim,
-                requires_human_review=True,
-            )
+            result.update(route="human", requires_human_review=True)
             return result
 
         if llm_label == deberta_label:
@@ -414,6 +673,24 @@ class CascadeEngine:
             )
         return result
 
+    def _empty_route_result(self) -> dict:
+        return {
+            "llm_model": self.llm_cfg["label"],
+            "llm_prompt": self.llm_cfg["prompt"],
+            "deberta_pred": None,
+            "deberta_conf": None,
+            "deberta_sim": None,
+            "llm_pred": None,
+            "llm_conf": None,
+            "llm_sim": None,
+            "route": None,
+            "related": None,
+            "similarity_annotation": None,
+            "requires_human_review": False,
+            "rejected": False,
+            "error": None,
+        }
+
 
 def annotate_pairs(
     pairs: list[dict],
@@ -422,6 +699,7 @@ def annotate_pairs(
 ) -> tuple[list[dict], dict]:
     engine = CascadeEngine()
     routes = {
+        "llm_auto": 0,
         "deberta_auto": 0,
         "deberta_ambiguous": 0,
         "consensus": 0,

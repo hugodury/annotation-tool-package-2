@@ -128,19 +128,32 @@ def effective_run_config(cfg: dict, is_cpu: bool) -> dict:
 
 
 KNOWN_ROUTES = (
+    "llm_auto",
     "deberta_auto",
     "deberta_ambiguous",
     "consensus",
+    "compare_agree",
+    "compare_disagree",
     "human",
     "rejected",
 )
 
+# Fractions theoriques par mode (estimation avant calibration fichier).
 DEFAULT_ROUTE_FRACTIONS: dict[str, float] = {
-    "deberta_auto": 0.68,
-    "deberta_ambiguous": 0.20,
-    "consensus": 0.06,
-    "human": 0.04,
+    "llm_auto": 0.9,
+    "deberta_auto": 0.0,
+    "deberta_ambiguous": 0.0,
+    "consensus": 0.0,
+    "human": 0.1,
+    "rejected": 0.0,
+}
+CASCADE_ROUTE_FRACTIONS: dict[str, float] = {
+    "deberta_auto": 0.75,
+    "deberta_ambiguous": 0.12,
+    "consensus": 0.05,
+    "human": 0.06,
     "rejected": 0.02,
+    "llm_auto": 0.0,
 }
 
 _session_models_warm = False
@@ -149,7 +162,7 @@ _TARGET_DONE = re.compile(
     r"TARGET DONE ref_index=\d+ ref=\d+/\d+ target=\d+/\d+ route=(\w+) duration=([\d.]+)s"
 )
 _BATCH_START_FILE = re.compile(r"BATCH START file=(.+?) indices=")
-LLM_ROUTES = ("consensus", "human", "rejected")
+LLM_ROUTES = ("llm_auto", "consensus", "human", "rejected")
 DEBERTA_ROUTES = ("deberta_auto", "deberta_ambiguous")
 ESTIMATE_SAMPLE_MAX = 100
 CALIBRATION_VERSION = 2
@@ -466,6 +479,35 @@ def refresh_estimate_calibration(
     _save_calibration_store(base_dir, store)
 
 
+def _has_recorded_estimate_timing(
+    *,
+    device_cal: dict[str, Any] | None,
+    file_cal: dict[str, Any] | None,
+    logs_dir: Path | None,
+    filename: str | None,
+) -> bool:
+    """True si un Run Model a deja ete chronometre et persiste.
+
+    Un redemarrage Flask efface le log de session, mais PAS
+    instance/estimate_calibration.json : si la machine ou le fichier a deja
+    des timings enregistres, l'estimation reste disponible.
+    """
+    file_tb = (file_cal or {}).get("two_bucket") or {}
+    if int(file_tb.get("sample_size", 0)) >= 1:
+        return True
+    if file_cal and int(file_cal.get("n_batches", 0)) >= 1:
+        return True
+    # Timings machine persistants (survivent au redemarrage serveur)
+    routes = (device_cal or {}).get("routes") or {}
+    for route_name in LLM_ROUTES:
+        if int((routes.get(route_name) or {}).get("n", 0)) >= 1:
+            return True
+    # Sinon : lot en cours dans la session courante uniquement
+    if _session_has_prior_targets(logs_dir, filename):
+        return True
+    return _session_has_prior_targets(logs_dir, None)
+
+
 def _session_has_prior_targets(logs_dir: Path | None, filename: str | None = None) -> bool:
     if not logs_dir:
         return False
@@ -571,6 +613,7 @@ def _default_sec_per_route(device_type: str, est_cfg: dict) -> dict[str, float]:
     key = "route_sec_cpu" if is_cpu else "route_sec_gpu"
     cfg_map = est_cfg.get(key) or {}
     fallback_cpu = {
+        "llm_auto": 14.0,
         "deberta_auto": 0.30,
         "deberta_ambiguous": 0.35,
         "consensus": 16.0,
@@ -578,6 +621,7 @@ def _default_sec_per_route(device_type: str, est_cfg: dict) -> dict[str, float]:
         "rejected": 15.0,
     }
     fallback_gpu = {
+        "llm_auto": 7.0,
         "deberta_auto": 0.20,
         "deberta_ambiguous": 0.25,
         "consensus": 8.0,
@@ -615,28 +659,37 @@ def _default_bucket_secs(
     est_cfg: dict,
     device_routes: dict[str, Any] | None = None,
 ) -> tuple[float, float]:
-    """Retourne (sec_deberta, sec_llm) par defaut ou depuis calibration machine."""
+    """Retourne (sec_deberta, sec_llm) par defaut ou depuis calibration machine.
+
+    Les p50 par route sont ponderes par le nombre d'echantillons (n) afin
+    qu'une route rare (ex. un unique timeout aberrant) ne domine pas la
+    moyenne LLM."""
     routes = device_routes or {}
-    deberta_p50 = []
-    llm_p50 = []
-    for r in DEBERTA_ROUTES:
-        ent = routes.get(r)
-        if ent and ent.get("p50"):
-            deberta_p50.append(float(ent["p50"]))
-    for r in LLM_ROUTES:
-        ent = routes.get(r)
-        if ent and ent.get("p50"):
-            llm_p50.append(float(ent["p50"]))
-    if deberta_p50:
-        sec_deberta = statistics.median(deberta_p50)
+
+    def _weighted_p50(route_names: tuple[str, ...]) -> float | None:
+        num = 0.0
+        den = 0.0
+        for r in route_names:
+            ent = routes.get(r)
+            if not ent or not ent.get("p50"):
+                continue
+            n = max(1, int(ent.get("n", 1)))
+            num += float(ent["p50"]) * n
+            den += n
+        return num / den if den else None
+
+    deberta_secs = _weighted_p50(DEBERTA_ROUTES)
+    llm_secs = _weighted_p50(LLM_ROUTES)
+    if deberta_secs is not None:
+        sec_deberta = deberta_secs
     elif device_type == "cpu" and cpu_slow:
         sec_deberta = float(cpu_slow.get("sec_deberta", 1.0))
     else:
         sec_deberta = float(
             (_default_sec_per_route(device_type, est_cfg).get("deberta_auto", 0.25))
         )
-    if llm_p50:
-        sec_llm = statistics.median(llm_p50)
+    if llm_secs is not None:
+        sec_llm = llm_secs
     elif device_type == "cpu" and cpu_slow:
         sec_llm = float(cpu_slow.get("sec_llm", 45.0))
     else:
@@ -797,13 +850,22 @@ def _resolve_two_bucket_estimate(
     file_cal: dict[str, Any] | None,
     profile_cal: dict[str, Any] | None,
     device_cal: dict[str, Any] | None,
+    cascade_mode: str = "qwen_only",
 ) -> dict[str, Any]:
     """Modele: n_llm = N * p_llm, n_deberta = N * p_deberta, temps = somme ponderee."""
     device_routes = (device_cal or {}).get("routes") or {}
+    from cascade.core import CASCADE_MODE_DEBERTA_QWEN, normalize_cascade_mode
+
+    mode = normalize_cascade_mode(cascade_mode)
     sec_deberta, sec_llm = _default_bucket_secs(
         device_type, cpu_slow, est_cfg, device_routes
     )
-    llm_frac = _config_llm_fraction(est_cfg)
+    if mode == CASCADE_MODE_DEBERTA_QWEN:
+        llm_frac = _llm_fraction(CASCADE_ROUTE_FRACTIONS)
+        if cpu_slow.get("llm_fraction") is not None:
+            llm_frac = float(cpu_slow["llm_fraction"])
+    else:
+        llm_frac = 1.0
     deberta_frac = 1.0 - llm_frac
     has_device_times = any(
         (device_routes.get(r) or {}).get("p50")
@@ -849,14 +911,22 @@ def _resolve_two_bucket_estimate(
         source = legacy_tb["source"]
         tier = legacy_tb["tier"]
 
-    n_llm = int(round(n_remaining * llm_frac))
-    n_deberta = max(0, n_remaining - n_llm)
-    processing_sec = n_llm * sec_llm + n_deberta * sec_deberta
+    # Qwen seul : 100 % LLM. DeBERTa+Qwen : repartition calibree ou theorique.
+    if mode == CASCADE_MODE_DEBERTA_QWEN:
+        n_llm = int(round(n_remaining * llm_frac))
+        n_deberta = max(0, n_remaining - n_llm)
+        processing_sec = n_llm * sec_llm + n_deberta * sec_deberta
+        formula = (
+            f"{n_llm} Qwen x {sec_llm:.0f}s + {n_deberta} DeBERTa x {sec_deberta:.1f}s"
+        )
+    else:
+        llm_frac = 1.0
+        deberta_frac = 0.0
+        n_llm = n_remaining
+        n_deberta = 0
+        processing_sec = n_llm * sec_llm
+        formula = f"{n_llm} Qwen x {sec_llm:.0f}s"
     sec_per = processing_sec / max(1, n_remaining)
-    formula = (
-        f"{n_llm} Qwen x {sec_llm:.0f}s + {n_deberta} DeBERTa x {sec_deberta:.1f}s"
-        f" ({int(round(llm_frac * 100))}% / {int(round(deberta_frac * 100))}%)"
-    )
     return {
         "llm_fraction": llm_frac,
         "deberta_fraction": deberta_frac,
@@ -1172,6 +1242,7 @@ def clear_target_for_reannotate(target: dict) -> None:
         "llm_error",
         "llm_pred",
         "llm_confidence",
+        "pipeline_compare",
     ):
         target.pop(key, None)
 
@@ -1221,7 +1292,11 @@ def estimate_batch(
     models_warm: bool = False,
     base_dir: Path | None = None,
     filename: str | None = None,
+    cascade_mode: str = "qwen_only",
 ) -> dict[str, Any]:
+    from cascade.core import CASCADE_MODE_COMPARE, normalize_cascade_mode
+
+    mode = normalize_cascade_mode(cascade_mode)
     run_cfg = cfg.get("run_model", {})
     cpu_slow = run_cfg.get("cpu_slow") or {}
     est_cfg = run_cfg.get("estimate") or {}
@@ -1281,6 +1356,7 @@ def estimate_batch(
         file_cal=file_cal,
         profile_cal=profile_cal,
         device_cal=device_cal,
+        cascade_mode=mode,
     )
     calibration_tier = bucket["tier"]
     sec_per = bucket["sec_per_target"]
@@ -1330,12 +1406,17 @@ def estimate_batch(
         warning = (warning + " " if warning else "") + (
             "All targets in this range are already annotated."
         )
-    if calibration_tier == "theorique":
-        note = (
-            "Premier lancement : repartition theorique (config 12 %) "
-            "et temps calibres machine ou valeurs par defaut."
+    # Pas d'estimation theorique a l'ecran : on attend qu'au moins un Run Model
+    # ait enregistre des timings reels (calibration / logs), puis on propose.
+    estimate_available = (
+        mode != CASCADE_MODE_COMPARE
+        and _has_recorded_estimate_timing(
+            device_cal=device_cal,
+            file_cal=file_cal,
+            logs_dir=logs_dir,
+            filename=filename,
         )
-        warning = (warning + " " if warning else "") + note
+    )
 
     route_fractions_pct = {r: round(frac_display.get(r, 0) * 100, 1) for r in KNOWN_ROUTES}
     route_seconds = {r: round(sec_per_route[r], 2) for r in KNOWN_ROUTES}
@@ -1346,16 +1427,21 @@ def estimate_batch(
         "refs": n_refs,
         "targets": n_targets,
         "targets_remaining": n_remaining,
-        "estimated_seconds": round(total_sec),
-        "estimated_label": _format_elapsed(total_sec),
-        "sec_per_target": round(sec_per, 2),
-        "estimate_method": f"{calibration_tier}+{bucket['source']}+{load_source}",
-        "estimate_detail": method_label,
-        "estimate_formula": bucket["formula"],
-        "estimate_llm_calls": bucket["n_llm"],
-        "estimate_deberta_calls": bucket["n_deberta"],
-        "sec_deberta": bucket["sec_deberta"],
-        "sec_llm": bucket["sec_llm"],
+        "estimate_available": estimate_available,
+        "estimated_seconds": round(total_sec) if estimate_available else None,
+        "estimated_label": _format_elapsed(total_sec) if estimate_available else None,
+        "sec_per_target": round(sec_per, 2) if estimate_available else None,
+        "estimate_method": (
+            f"{calibration_tier}+{bucket['source']}+{load_source}"
+            if estimate_available
+            else None
+        ),
+        "estimate_detail": method_label if estimate_available else None,
+        "estimate_formula": bucket["formula"] if estimate_available else None,
+        "estimate_llm_calls": bucket["n_llm"] if estimate_available else None,
+        "estimate_deberta_calls": bucket["n_deberta"] if estimate_available else None,
+        "sec_deberta": bucket["sec_deberta"] if estimate_available else None,
+        "sec_llm": bucket["sec_llm"] if estimate_available else None,
         "estimate_sample_size": bucket["sample_size"],
         "calibration_tier": calibration_tier,
         "file_profile": file_profile,
@@ -1363,8 +1449,8 @@ def estimate_batch(
         "route_fractions_pct": route_fractions_pct,
         "route_seconds": route_seconds,
         "fraction_source": frac_source,
-        "model_load_seconds": round(model_load),
-        "model_load_source": load_source,
+        "model_load_seconds": round(model_load) if estimate_available else None,
+        "model_load_source": load_source if estimate_available else None,
         "is_cpu": is_cpu,
         "device_type": device,
         "device_label": hw,
@@ -1380,6 +1466,7 @@ def estimate_batch(
         "refs_complete": range_stats["refs_complete"],
         "refs_partial": range_stats["refs_partial"],
         "force_reannotate": force_reannotate,
+        "cascade_mode": mode,
     }
 
 
@@ -1403,6 +1490,132 @@ def find_resume_index(
     }
 
 
+def _infer_cascade_source_from_side(cascade_side: dict) -> tuple[str, str]:
+    """Retombe sur la route stockée si decision_source absente (anciennes annos)."""
+    source = cascade_side.get("decision_source")
+    label = cascade_side.get("decision_source_label")
+    if source in {"deberta", "qwen"}:
+        return source, label or ("DeBERTa" if source == "deberta" else "Qwen")
+    route = cascade_side.get("route")
+    if route in {"deberta_auto", "deberta_ambiguous"}:
+        return "deberta", "DeBERTa"
+    if route == "consensus":
+        return "qwen", "Qwen"
+    if cascade_side.get("llm_pred") is not None and route not in {
+        "deberta_auto",
+        "deberta_ambiguous",
+    }:
+        return "qwen", "Qwen"
+    if cascade_side.get("deberta_pred") is not None:
+        return "deberta", "DeBERTa"
+    return "unknown", "?"
+
+
+def build_compare_disagreement_report(
+    data: list,
+    start_index: int,
+    end_index: int,
+) -> dict[str, Any]:
+    """Liste et agrège les désaccords Qwen vs Cascade sur une plage."""
+    from collections import Counter
+
+    items: list[dict[str, Any]] = []
+    by_pair: Counter[str] = Counter()
+    qwen_labels: Counter[str] = Counter()
+    cascade_labels: Counter[str] = Counter()
+    cascade_sources: Counter[str] = Counter()
+
+    for ref_idx in range(start_index, end_index + 1):
+        if ref_idx < 0 or ref_idx >= len(data):
+            continue
+        item = data[ref_idx]
+        targets = item.get("database") or []
+        for t_idx, target in enumerate(targets):
+            cmp = target.get("pipeline_compare") or {}
+            route = target.get("cascade_route")
+            is_disagree = route == "compare_disagree" or (
+                bool(cmp) and cmp.get("agree") is False
+            )
+            if not is_disagree:
+                continue
+            qwen_side = cmp.get("qwen_only") or {}
+            cascade_side = cmp.get("deberta_qwen") or {}
+            qwen_label = (
+                qwen_side.get("related")
+                or qwen_side.get("llm_pred")
+                or target.get("llm_pred")
+                or "?"
+            )
+            cascade_label = (
+                cascade_side.get("related")
+                or cascade_side.get("deberta_pred")
+                or cascade_side.get("llm_pred")
+                or target.get("deberta_pred")
+                or "?"
+            )
+            source, source_label = _infer_cascade_source_from_side(cascade_side)
+            if cmp.get("cascade_source") in {"deberta", "qwen"}:
+                source = cmp["cascade_source"]
+                source_label = cmp.get("cascade_source_label") or source_label
+            cascade_display = f"{cascade_label} ({source_label})"
+            pair = f"{qwen_label} ≠ {cascade_display}"
+            by_pair[pair] += 1
+            qwen_labels[str(qwen_label)] += 1
+            cascade_labels[str(cascade_display)] += 1
+            cascade_sources[source_label] += 1
+            news = str(target.get("news") or "").strip()
+            preview = (news[:72] + "…") if len(news) > 72 else news
+            items.append(
+                {
+                    "ref_index": ref_idx,
+                    "target_index": t_idx,
+                    "target_num": t_idx + 1,
+                    "target_id": f"T{t_idx + 1}",
+                    "label": f"ref {ref_idx} · T{t_idx + 1}",
+                    "qwen": qwen_label,
+                    "cascade": cascade_label,
+                    "cascade_source": source,
+                    "cascade_source_label": source_label,
+                    "cascade_display": cascade_display,
+                    "pair": pair,
+                    "news_preview": preview,
+                }
+            )
+
+    top_pairs = [
+        {"pair": pair, "count": count}
+        for pair, count in by_pair.most_common()
+    ]
+    insight = None
+    if items:
+        top_q = qwen_labels.most_common(1)[0]
+        top_c = cascade_labels.most_common(1)[0]
+        top_p = top_pairs[0] if top_pairs else None
+        source_bits = ", ".join(
+            f"{name} {n}" for name, n in cascade_sources.most_common()
+        )
+        insight = (
+            f"{len(items)} désaccord(s). "
+            f"Qwen penche surtout vers « {top_q[0]} » ({top_q[1]}) ; "
+            f"Cascade vers « {top_c[0]} » ({top_c[1]})"
+        )
+        if source_bits:
+            insight += f". Décision Cascade via : {source_bits}"
+        if top_p:
+            insight += f". Motif le plus fréquent : {top_p['pair']} ({top_p['count']})"
+        insight += "."
+
+    return {
+        "count": len(items),
+        "items": items,
+        "by_pair": top_pairs,
+        "qwen_labels": dict(qwen_labels),
+        "cascade_labels": dict(cascade_labels),
+        "cascade_sources": dict(cascade_sources),
+        "insight": insight,
+    }
+
+
 def build_batch_summary(
     *,
     targets_annotated: int,
@@ -1411,11 +1624,13 @@ def build_batch_summary(
     elapsed_label: str,
     first_review_index: int | None,
     references_in_batch: int,
+    compare_durations: dict[str, float | int] | None = None,
+    compare_disagreements: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     human = routing_stats.get("human", 0)
     rejected = routing_stats.get("rejected", 0)
     needs_manual = human + rejected
-    return {
+    summary: dict[str, Any] = {
         "title": "Automatic annotation complete",
         "prefilled_label": f"{targets_annotated} / {total_targets} targets pre-filled",
         "deberta_auto": routing_stats.get("deberta_auto", 0),
@@ -1436,6 +1651,47 @@ def build_batch_summary(
             f"Duration: {elapsed_label}",
         ],
     }
+    if compare_durations and int(compare_durations.get("pairs") or 0) > 0:
+        qwen_s = float(compare_durations.get("qwen_s") or 0.0)
+        cascade_s = float(compare_durations.get("cascade_s") or 0.0)
+        delta_s = abs(qwen_s - cascade_s)
+        if abs(qwen_s - cascade_s) < 1e-9:
+            faster = "tie"
+            faster_label = "égalité"
+        elif qwen_s < cascade_s:
+            faster = "qwen"
+            faster_label = f"Qwen plus rapide (−{_format_elapsed(delta_s)})"
+        else:
+            faster = "cascade"
+            faster_label = f"Cascade plus rapide (−{_format_elapsed(delta_s)})"
+        qwen_label = _format_elapsed(qwen_s)
+        cascade_label = _format_elapsed(cascade_s)
+        delta_label = _format_elapsed(delta_s)
+        summary["compare_time"] = {
+            "qwen_s": round(qwen_s, 2),
+            "cascade_s": round(cascade_s, 2),
+            "delta_s": round(delta_s, 2),
+            "faster": faster,
+            "qwen_label": qwen_label,
+            "cascade_label": cascade_label,
+            "delta_label": delta_label,
+            "faster_label": faster_label,
+            "pairs": int(compare_durations["pairs"]),
+        }
+        summary["compare_time_label"] = (
+            f"Qwen {qwen_label} · Cascade {cascade_label} · "
+            f"Diff {delta_label} ({faster_label})"
+        )
+        summary["lines"].append(f"Compare timing: {summary['compare_time_label']}")
+    if compare_disagreements and int(compare_disagreements.get("count") or 0) > 0:
+        summary["compare_disagreements"] = compare_disagreements
+        summary["lines"].append(
+            compare_disagreements.get("insight")
+            or f"{compare_disagreements['count']} compare disagreement(s)"
+        )
+    elif compare_disagreements is not None:
+        summary["compare_disagreements"] = compare_disagreements
+    return summary
 
 
 build_french_summary = build_batch_summary
@@ -1445,7 +1701,7 @@ def _find_first_review_index(data: list, start: int, end: int) -> int | None:
     for idx in range(start, end + 1):
         for target in data[idx].get("database") or []:
             route = target.get("cascade_route")
-            if route in ("human", "rejected"):
+            if route in ("human", "rejected", "compare_disagree"):
                 return idx
             if route and not target.get("related"):
                 return idx
@@ -1516,6 +1772,7 @@ def start_batch(
     force_reannotate: bool = False,
     backup_path: str | None = None,
     app_module=None,
+    cascade_mode: str = "qwen_only",
 ) -> bool:
     if app_module is None:
         app_module = sys.modules.get("__main__")
@@ -1551,6 +1808,7 @@ def start_batch(
             base_dir,
             force_reannotate,
             backup_path,
+            cascade_mode,
         ),
         daemon=True,
     )
@@ -1569,6 +1827,7 @@ def _run_batch(
     base_dir: Path,
     force_reannotate: bool = False,
     backup_path: str | None = None,
+    cascade_mode: str = "qwen_only",
 ) -> None:
     import numpy as np
 
@@ -1585,6 +1844,7 @@ def _run_batch(
                 np,
                 force_reannotate=force_reannotate,
                 backup_path=backup_path,
+                cascade_mode=cascade_mode,
             )
     except Exception as e:
         logging.getLogger("run_model").exception("Erreur fatale batch: %s", e)
@@ -1603,6 +1863,7 @@ def _run_batch_inner(
     *,
     force_reannotate: bool = False,
     backup_path: str | None = None,
+    cascade_mode: str = "qwen_only",
 ) -> None:
     from annotation_store import file_lock_for
 
@@ -1613,7 +1874,14 @@ def _run_batch_inner(
 
     logger = _setup_logger(base_dir / "logs")
     try:
-        from cascade.core import BatchCancelledError
+        from cascade.core import (
+            BatchCancelledError,
+            CASCADE_MODE_COMPARE,
+            CASCADE_MODE_DEBERTA_QWEN,
+            normalize_cascade_mode,
+        )
+
+        mode = normalize_cascade_mode(cascade_mode)
 
         batch_start = time.monotonic()
         _set_progress(message="Loading ML models (may take 1–3 min on CPU)…")
@@ -1645,6 +1913,8 @@ def _run_batch_inner(
                 eng = app_mod.get_cascade_engine()
                 if is_cpu:
                     eng.cfg = cfg
+                if mode == CASCADE_MODE_DEBERTA_QWEN or mode == CASCADE_MODE_COMPARE:
+                    eng.ensure_deberta()
                 load_box["engine"] = eng
                 load_box["sbert"] = app_mod.get_sbert_model()
             except BaseException as e:
@@ -1683,13 +1953,14 @@ def _run_batch_inner(
         _set_progress(targets_total=targets_total, message="Annotation in progress…")
         logger.info(
             "BATCH START file=%s indices=%s-%s refs=%s targets=%s threshold=%.3f "
-            "force_reannotate=%s backup=%s",
+            "cascade_mode=%s force_reannotate=%s backup=%s",
             original_filename,
             start_index,
             end_index,
             end_index - start_index + 1,
             targets_total,
             threshold,
+            mode,
             force_reannotate,
             backup_path or "none",
         )
@@ -1700,11 +1971,19 @@ def _run_batch_inner(
         references_fully_annotated_count = 0
         refs_processed_in_batch = 0
         routing_stats = {
+            "llm_auto": 0,
             "deberta_auto": 0,
             "deberta_ambiguous": 0,
             "consensus": 0,
+            "compare_agree": 0,
+            "compare_disagree": 0,
             "rejected": 0,
             "human": 0,
+        }
+        compare_durations: dict[str, float | int] = {
+            "qwen_s": 0.0,
+            "cascade_s": 0.0,
+            "pairs": 0,
         }
 
         def save_checkpoint() -> None:
@@ -1730,6 +2009,7 @@ def _run_batch_inner(
                     partial_error="Batch cancelled by user.",
                     start_index=start_index,
                     end_index=end_index,
+                    compare_durations=compare_durations,
                 ),
                 error="Batch cancelled.",
             )
@@ -1820,6 +2100,7 @@ def _run_batch_inner(
                             ),
                             start_index=start_index,
                             end_index=end_index,
+                            compare_durations=compare_durations,
                         ),
                         error=f"No target annotated after {no_annotation_timeout}s.",
                     )
@@ -1833,7 +2114,8 @@ def _run_batch_inner(
                     current_target_total=len(targets),
                     message=(
                         f"Reference {ref_num}/{end_index - start_index + 1} — "
-                        f"target {i + 1}/{len(targets)} (DeBERTa / LLM running…)"
+                        f"target {i + 1}/{len(targets)} ("
+                        f"{'Compare Qwen+Cascade' if mode == CASCADE_MODE_COMPARE else 'Cascade DeBERTa+Qwen' if mode == CASCADE_MODE_DEBERTA_QWEN else 'Qwen LLM'} running…)"
                     ),
                 )
                 logger.info(
@@ -1858,6 +2140,7 @@ def _run_batch_inner(
                         target_text,
                         tau_auto=threshold,
                         should_cancel=_cancelled,
+                        cascade_mode=mode,
                     )
                 except BatchCancelledError:
                     logger.info(
@@ -1871,14 +2154,37 @@ def _run_batch_inner(
 
                 route_name = out["route"]
                 target["cascade_route"] = route_name
+                if out.get("pipeline_compare"):
+                    target["pipeline_compare"] = out["pipeline_compare"]
+                    cmp = out["pipeline_compare"]
+                    q_dur = (cmp.get("qwen_only") or {}).get("duration_s")
+                    c_dur = (cmp.get("deberta_qwen") or {}).get("duration_s")
+                    if isinstance(q_dur, (int, float)) and isinstance(c_dur, (int, float)):
+                        compare_durations["qwen_s"] = (
+                            float(compare_durations["qwen_s"]) + float(q_dur)
+                        )
+                        compare_durations["cascade_s"] = (
+                            float(compare_durations["cascade_s"]) + float(c_dur)
+                        )
+                        compare_durations["pairs"] = int(compare_durations["pairs"]) + 1
                 if out.get("llm_error"):
                     target["llm_error"] = out["llm_error"]
 
-                if route_name in {"deberta_auto", "deberta_ambiguous", "consensus"}:
+                if route_name in {
+                    "llm_auto",
+                    "deberta_auto",
+                    "deberta_ambiguous",
+                    "consensus",
+                    "compare_agree",
+                }:
                     target["related"] = out["related"]
-                    target["model_confidence"] = round(
-                        out["deberta_conf"] if route_name != "consensus" else out["llm_conf"],
-                        4,
+                    conf = (
+                        out["llm_conf"]
+                        if route_name in {"consensus", "llm_auto"}
+                        else out["deberta_conf"]
+                    )
+                    target["model_confidence"] = (
+                        round(conf, 4) if conf is not None else None
                     )
                     if route_name == "consensus":
                         target["similarity_annotation"] = round(out["llm_sim"], 4)
@@ -1909,11 +2215,35 @@ def _run_batch_inner(
                         target["similarity_annotation"] = round(
                             max(0.0, min(1.0, float(sim))), 4
                         )
+                        # La regle not_related/sim s'applique sur le score FINAL
+                        # (SBERT), pas seulement sur le score LLM : sinon Qwen peut
+                        # poser not_related avec sim LLM basse, puis SBERT ecrase
+                        # a 0.48 et le label reste contradictoire.
+                        from cascade.core import enforce_label_sim_consistency
+
+                        target["related"] = enforce_label_sim_consistency(
+                            target.get("related"),
+                            target["similarity_annotation"],
+                        )
                     targets_annotated_count += 1
+                    routing_stats[route_name] = routing_stats.get(route_name, 0) + 1
+                elif route_name == "compare_disagree":
+                    target["related"] = None
+                    target["similarity_annotation"] = None
+                    all_above_threshold = False
+                    if out.get("llm_pred") is not None:
+                        target["llm_pred"] = out["llm_pred"]
+                        target["llm_confidence"] = round(out["llm_conf"], 4)
+                    if out.get("deberta_pred") is not None:
+                        target["deberta_pred"] = out["deberta_pred"]
                     routing_stats[route_name] = routing_stats.get(route_name, 0) + 1
                 else:
                     all_above_threshold = False
-                    target["model_confidence"] = round(out["deberta_conf"], 4)
+                    conf = out.get("deberta_conf")
+                    if conf is None:
+                        conf = out.get("llm_conf")
+                    if conf is not None:
+                        target["model_confidence"] = round(conf, 4)
                     if out.get("llm_pred") is not None:
                         target["llm_pred"] = out["llm_pred"]
                         target["llm_confidence"] = round(out["llm_conf"], 4)
@@ -1969,6 +2299,9 @@ def _run_batch_inner(
         }
         elapsed = _format_elapsed(time.monotonic() - batch_start)
         first_review = _find_first_review_index(data, start_index, end_index)
+        compare_disagreements = build_compare_disagreement_report(
+            data, start_index, end_index
+        )
         summary = build_batch_summary(
             targets_annotated=targets_annotated_count,
             total_targets=total_targets_evaluated,
@@ -1976,16 +2309,20 @@ def _run_batch_inner(
             elapsed_label=elapsed,
             first_review_index=first_review,
             references_in_batch=end_index - start_index + 1,
+            compare_durations=compare_durations,
+            compare_disagreements=compare_disagreements,
         )
         logger.info(
             "BATCH END file=%s annotated=%s/%s refs_fully_done=%s duration=%s "
-            "routes=%s",
+            "routes=%s compare_timing=%s disagreements=%s",
             original_filename,
             targets_annotated_count,
             total_targets_evaluated,
             references_fully_annotated_count,
             elapsed,
             routing_stats,
+            compare_durations,
+            compare_disagreements.get("count", 0),
         )
         global _session_models_warm
         device_type = report.get("hardware", {}).get("gpu", {}).get("device", "cpu")
@@ -2009,6 +2346,9 @@ def _run_batch_inner(
                 "message": summary["lines"][0] + " — " + summary["duration_label"],
                 "summary_en": summary,
                 "summary_fr": summary,
+                "compare_time": summary.get("compare_time"),
+                "compare_time_label": summary.get("compare_time_label"),
+                "compare_disagreements": summary.get("compare_disagreements"),
                 "annotated_count": references_fully_annotated_count,
                 "data": data,
                 "processed_ids": list(processed_ids),
@@ -2044,10 +2384,14 @@ def _partial_result(
     partial_error,
     start_index: int = 0,
     end_index: int | None = None,
+    compare_durations: dict[str, float | int] | None = None,
 ) -> dict:
     if end_index is None:
         end_index = len(data) - 1
     enriched = app_mod.enrich_data_with_status(original_filename, data)
+    compare_disagreements = build_compare_disagreement_report(
+        enriched, start_index, end_index
+    )
     summary = build_batch_summary(
         targets_annotated=targets_annotated_count,
         total_targets=total_targets_evaluated,
@@ -2055,6 +2399,8 @@ def _partial_result(
         elapsed_label=elapsed_label,
         first_review_index=_find_first_review_index(data, start_index, end_index),
         references_in_batch=end_index - start_index + 1,
+        compare_durations=compare_durations,
+        compare_disagreements=compare_disagreements,
     )
     processed_ids = {
         str(item.get("news_id"))
@@ -2071,6 +2417,9 @@ def _partial_result(
         ),
         "summary_en": summary,
         "summary_fr": summary,
+        "compare_time": summary.get("compare_time"),
+        "compare_time_label": summary.get("compare_time_label"),
+        "compare_disagreements": summary.get("compare_disagreements"),
         "annotated_count": references_fully_annotated_count,
         "data": enriched,
         "processed_ids": list(processed_ids),

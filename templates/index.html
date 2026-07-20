@@ -306,6 +306,59 @@
             flex-direction: column;
         }
 
+        #reannotateConfirmModal .modal-content {
+            border: none;
+            border-radius: 14px;
+            overflow: hidden;
+            box-shadow: 0 18px 48px rgba(44, 62, 80, 0.22);
+        }
+        #reannotateConfirmModal .modal-header {
+            background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%);
+            color: #fff;
+            border-bottom: none;
+            padding: 1.1rem 1.35rem;
+        }
+        #reannotateConfirmModal .modal-header .btn-close {
+            filter: invert(1);
+        }
+        #reannotateConfirmModal .reann-stat-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.65rem;
+            margin: 1rem 0;
+        }
+        #reannotateConfirmModal .reann-stat {
+            background: #f4f6f8;
+            border-radius: 10px;
+            padding: 0.75rem 0.9rem;
+        }
+        #reannotateConfirmModal .reann-stat .label {
+            display: block;
+            font-size: 0.75rem;
+            color: #6c757d;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+        #reannotateConfirmModal .reann-stat .value {
+            display: block;
+            font-size: 1.15rem;
+            font-weight: 700;
+            color: #2c3e50;
+            margin-top: 0.15rem;
+        }
+        #reannotateConfirmModal .reann-choice {
+            background: #fff8e6;
+            border: 1px solid #ffe08a;
+            border-radius: 10px;
+            padding: 0.85rem 1rem;
+            font-size: 0.92rem;
+        }
+        #reannotateConfirmModal .modal-footer {
+            border-top: none;
+            padding: 0 1.35rem 1.25rem;
+            gap: 0.5rem;
+        }
+
         .system-banner {
             border-radius: 10px;
             padding: 1rem 1.25rem;
@@ -514,6 +567,34 @@
             </div>
         </div>
     </div>
+
+    <div class="modal fade" id="reannotateConfirmModal" tabindex="-1" aria-labelledby="reannotateConfirmModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="reannotateConfirmModalLabel">
+                        <i class="fas fa-rotate me-2"></i>Annotations déjà présentes
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fermer"></button>
+                </div>
+                <div class="modal-body px-4">
+                    <p class="mb-0" id="reannotateConfirmLead"></p>
+                    <div class="reann-stat-grid" id="reannotateConfirmStats"></div>
+                    <div class="reann-choice" id="reannotateConfirmHint"></div>
+                    <p class="small text-muted mt-3 mb-0" id="reannotateConfirmEstimate" style="display:none;"></p>
+                </div>
+                <div class="modal-footer flex-wrap justify-content-end">
+                    <button type="button" class="btn btn-outline-secondary" id="reannotateCancelBtn">Annuler</button>
+                    <button type="button" class="btn btn-primary" id="reannotateResumeBtn" style="display:none;">
+                        <i class="fas fa-play me-1"></i>Reprendre sans écraser
+                    </button>
+                    <button type="button" class="btn btn-danger" id="reannotateForceBtn">
+                        <i class="fas fa-trash-alt me-1"></i>Supprimer et réannoter
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
     <div class="loading-overlay" id="loadingOverlay">
         <div class="spinner-border text-primary" role="status" style="width: 3rem; height: 3rem;">
             <span class="visually-hidden">Loading...</span>
@@ -600,16 +681,23 @@
                     <div class="d-flex align-items-center gap-2 mb-2 flex-wrap">
                         <input type="number" id="autoStart" class="form-control form-control-sm" placeholder="Start index" min="0" style="max-width:7rem;">
                         <input type="number" id="autoEnd" class="form-control form-control-sm" placeholder="End index" min="0" style="max-width:7rem;">
-                        <input type="number" id="autoThreshold" class="form-control form-control-sm" placeholder="τ" min="0" max="1" step="0.01" value="0.95" title="DeBERTa confidence threshold for auto-annotation (default 0.95)" style="max-width:6rem;">
+                        <select id="cascadeMode" class="form-select form-select-sm" style="max-width:12rem;" title="Annotation pipeline">
+                            <option value="qwen_only">Qwen only</option>
+                            <option value="deberta_qwen">DeBERTa + Qwen</option>
+                            <option value="compare">Compare both</option>
+                        </select>
+                        <input type="number" id="autoThreshold" class="form-control form-control-sm" placeholder="τ" min="0" max="1" step="0.01" value="0.95" title="DeBERTa confidence threshold (DeBERTa + Qwen mode, default 0.95)" style="max-width:6rem;">
                         <button id="runAutoAnnotate" class="btn btn-primary btn-sm" style="white-space: nowrap;" disabled title="Checking configuration…"><i class="fas fa-robot me-1"></i>Run Model</button>
                     </div>
                     <div class="alert alert-light border run-model-help p-2">
                         <strong><i class="fas fa-info-circle me-1"></i>How Run Model works</strong>
                         <ul class="mb-0 ps-3 mt-1">
                             <li><strong>Indices</strong> are 0-based reference positions in the JSON (not batch file numbers).</li>
-                            <li><strong>τ threshold</strong>: DeBERTa confidence for auto-fill (default 0.95). Higher = fewer LLM calls.</li>
-                            <li><strong>Run Model</strong> automatically resumes at the <em>first incomplete reference</em> in the range and skips finished targets.</li>
-                            <li><strong>Re-annotate</strong>: if annotations already exist, you will be asked whether to overwrite them.</li>
+                            <li><strong>Pipeline</strong>: <em>Qwen only</em> (all targets → Qwen) ; <em>DeBERTa + Qwen</em> (cascade) ; <em>Compare both</em> runs both pipelines and reports agreements / disagreements.</li>
+                            <li><strong>Compare</strong>: if both pipelines agree → auto-annotate ; otherwise the target stays for review with Qwen vs Cascade details.</li>
+                            <li><strong>τ threshold</strong>: DeBERTa confidence in <em>DeBERTa + Qwen</em> and <em>Compare</em> modes (default 0.95).</li>
+                            <li><strong>Run Model</strong> resumes at the <em>first incomplete reference</em> and skips finished targets — unless you choose to overwrite.</li>
+                            <li><strong>Re-annotate</strong>: if the range is partially or fully annotated, a confirmation modal asks whether to delete existing annotations and re-run.</li>
                             <li><strong>Disagreements</strong> (<code>human</code> / <code>rejected</code> routes) are not final — they are retried on the next run.</li>
                         </ul>
                     </div>
@@ -771,12 +859,202 @@
             }
         }
 
+        function formatElapsedLabel(seconds) {
+            const s = Math.round(Number(seconds) || 0);
+            if (s < 60) return `${s} s`;
+            const m = Math.floor(s / 60);
+            const rem = s % 60;
+            if (m < 60) return rem ? `${m} min ${rem} s` : `${m} min`;
+            const h = Math.floor(m / 60);
+            const remM = m % 60;
+            return `${h} h${remM ? ` ${remM} min` : ''}${rem ? ` ${rem} s` : ''}`;
+        }
+
+        function computeCompareTotalsFromData(data) {
+            if (!Array.isArray(data)) return null;
+            let qwen = 0;
+            let cascade = 0;
+            let pairs = 0;
+            for (const item of data) {
+                for (const target of (item.database || [])) {
+                    const cmp = target.pipeline_compare;
+                    if (!cmp) continue;
+                    const q = cmp.qwen_only?.duration_s;
+                    const c = cmp.deberta_qwen?.duration_s;
+                    if (typeof q === 'number' && isFinite(q) && typeof c === 'number' && isFinite(c)) {
+                        qwen += q;
+                        cascade += c;
+                        pairs += 1;
+                    }
+                }
+            }
+            if (!pairs) return null;
+            const delta = Math.abs(qwen - cascade);
+            let faster = 'tie';
+            let fasterLabel = 'égalité';
+            if (delta >= 1e-9) {
+                if (qwen < cascade) {
+                    faster = 'qwen';
+                    fasterLabel = `Qwen plus rapide (−${formatElapsedLabel(delta)})`;
+                } else {
+                    faster = 'cascade';
+                    fasterLabel = `Cascade plus rapide (−${formatElapsedLabel(delta)})`;
+                }
+            }
+            return {
+                qwen_s: qwen,
+                cascade_s: cascade,
+                delta_s: delta,
+                faster,
+                qwen_label: formatElapsedLabel(qwen),
+                cascade_label: formatElapsedLabel(cascade),
+                delta_label: formatElapsedLabel(delta),
+                faster_label: fasterLabel,
+                pairs,
+                label: `Qwen ${formatElapsedLabel(qwen)} · Cascade ${formatElapsedLabel(cascade)} · Diff ${formatElapsedLabel(delta)} (${fasterLabel})`,
+            };
+        }
+
+        function cascadeSourceFromSide(cascadeSide, cmp) {
+            const side = cascadeSide || {};
+            if (side.decision_source === 'deberta' || side.decision_source === 'qwen') {
+                return {
+                    source: side.decision_source,
+                    label: side.decision_source_label || (side.decision_source === 'deberta' ? 'DeBERTa' : 'Qwen'),
+                };
+            }
+            if (cmp?.cascade_source === 'deberta' || cmp?.cascade_source === 'qwen') {
+                return {
+                    source: cmp.cascade_source,
+                    label: cmp.cascade_source_label || (cmp.cascade_source === 'deberta' ? 'DeBERTa' : 'Qwen'),
+                };
+            }
+            const route = side.route;
+            if (route === 'deberta_auto' || route === 'deberta_ambiguous') {
+                return { source: 'deberta', label: 'DeBERTa' };
+            }
+            if (route === 'consensus') {
+                return { source: 'qwen', label: 'Qwen' };
+            }
+            if (side.llm_pred != null && route !== 'deberta_auto' && route !== 'deberta_ambiguous') {
+                return { source: 'qwen', label: 'Qwen' };
+            }
+            if (side.deberta_pred != null) {
+                return { source: 'deberta', label: 'DeBERTa' };
+            }
+            return { source: 'unknown', label: '?' };
+        }
+
+        function formatCascadeLabel(related, cascadeSide, cmp) {
+            const src = cascadeSourceFromSide(cascadeSide, cmp);
+            const rel = related ?? '—';
+            return `${rel} (${src.label})`;
+        }
+
+        function computeCompareDisagreementsFromData(data, startIdx, endIdx) {
+            if (!Array.isArray(data)) return null;
+            const start = Number.isFinite(startIdx) ? startIdx : 0;
+            const end = Number.isFinite(endIdx) ? endIdx : data.length - 1;
+            const items = [];
+            const byPair = {};
+            const qwenLabels = {};
+            const cascadeLabels = {};
+            const cascadeSources = {};
+            for (let refIdx = start; refIdx <= end && refIdx < data.length; refIdx++) {
+                const targets = data[refIdx]?.database || [];
+                targets.forEach((target, tIdx) => {
+                    const cmp = target.pipeline_compare || {};
+                    const isDisagree = target.cascade_route === 'compare_disagree' || cmp.agree === false;
+                    if (!isDisagree) return;
+                    const q = cmp.qwen_only?.related || cmp.qwen_only?.llm_pred || target.llm_pred || '?';
+                    const c = cmp.deberta_qwen?.related || cmp.deberta_qwen?.deberta_pred || cmp.deberta_qwen?.llm_pred || target.deberta_pred || '?';
+                    const src = cascadeSourceFromSide(cmp.deberta_qwen, cmp);
+                    const cascadeDisplay = `${c} (${src.label})`;
+                    const pair = `${q} ≠ ${cascadeDisplay}`;
+                    byPair[pair] = (byPair[pair] || 0) + 1;
+                    qwenLabels[q] = (qwenLabels[q] || 0) + 1;
+                    cascadeLabels[cascadeDisplay] = (cascadeLabels[cascadeDisplay] || 0) + 1;
+                    cascadeSources[src.label] = (cascadeSources[src.label] || 0) + 1;
+                    const news = String(target.news || '').trim();
+                    items.push({
+                        ref_index: refIdx,
+                        target_index: tIdx,
+                        target_num: tIdx + 1,
+                        target_id: `T${tIdx + 1}`,
+                        label: `ref ${refIdx} · T${tIdx + 1}`,
+                        qwen: q,
+                        cascade: c,
+                        cascade_source: src.source,
+                        cascade_source_label: src.label,
+                        cascade_display: cascadeDisplay,
+                        pair,
+                        news_preview: news.length > 72 ? news.slice(0, 72) + '…' : news,
+                    });
+                });
+            }
+            if (!items.length) return { count: 0, items: [], by_pair: [], insight: null };
+            const topPairs = Object.entries(byPair)
+                .map(([pair, count]) => ({ pair, count }))
+                .sort((a, b) => b.count - a.count);
+            const topQ = Object.entries(qwenLabels).sort((a, b) => b[1] - a[1])[0];
+            const topC = Object.entries(cascadeLabels).sort((a, b) => b[1] - a[1])[0];
+            const sourceBits = Object.entries(cascadeSources)
+                .sort((a, b) => b[1] - a[1])
+                .map(([name, n]) => `${name} ${n}`)
+                .join(', ');
+            let insight = `${items.length} désaccord(s). Qwen penche surtout vers « ${topQ[0]} » (${topQ[1]}) ; Cascade vers « ${topC[0]} » (${topC[1]})`;
+            if (sourceBits) insight += `. Décision Cascade via : ${sourceBits}`;
+            if (topPairs[0]) insight += `. Motif le plus fréquent : ${topPairs[0].pair} (${topPairs[0].count})`;
+            insight += '.';
+            return {
+                count: items.length,
+                items,
+                by_pair: topPairs,
+                qwen_labels: qwenLabels,
+                cascade_labels: cascadeLabels,
+                cascade_sources: cascadeSources,
+                insight,
+            };
+        }
+
+        function renderCompareDisagreementHtml(report) {
+            if (!report || !(report.count > 0)) return '';
+            const esc = (v) => String(v ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;');
+            const pairs = (report.by_pair || [])
+                .map(p => `<span class="badge bg-warning text-dark me-1 mb-1">${esc(p.pair)} ×${p.count}</span>`)
+                .join('');
+            const rows = (report.items || []).map(it => {
+                const cascadeShown = it.cascade_display || `${it.cascade} (${it.cascade_source_label || '?'})`;
+                return `
+                <button type="button" class="btn btn-sm btn-outline-warning text-start w-100 mb-1"
+                    onclick="goToTarget(${it.ref_index}, ${it.target_index})"
+                    title="${esc(it.news_preview || '')}">
+                    <b>${esc(it.label)}</b>
+                    — Qwen <code>${esc(it.qwen)}</code> ≠ Cascade <code>${esc(cascadeShown)}</code>
+                </button>
+            `;
+            }).join('');
+            return `
+                <div class="run-summary-routing mt-2" style="background:#fff8e6;border:1px solid #ffe08a;border-radius:8px;padding:0.55rem 0.7rem;">
+                    <strong>Désaccords (${report.count})</strong>
+                    ${report.insight ? `<div class="small mt-1 mb-2">${esc(report.insight)}</div>` : ''}
+                    <div class="mb-2">${pairs}</div>
+                    <div class="small text-muted mb-1">Clique pour ouvrir la cible :</div>
+                    <div style="max-height: 180px; overflow-y: auto;">${rows}</div>
+                </div>
+            `;
+        }
+
         function renderBatchSummary(result, isPartial) {
             const statusDiv = document.getElementById('autoAnnotateStatus');
             const hint = document.getElementById('runEstimateHint');
             if (hint) hint.textContent = '';
-            const s = result.summary_en || result.summary_fr;
-            if (!s) {
+            const s = result.summary_en || result.summary_fr || {};
+            if (!s.title && !s.prefilled_label && !result.routing_stats) {
                 statusDiv.innerHTML = `<div class="fw-bold" style="color:var(--accent-color)">${result.message || result.error || ''}</div>`;
                 return;
             }
@@ -789,14 +1067,58 @@
             const routeTotal = Object.values(stats).reduce((sum, n) => sum + (Number(n) || 0), 0) || 0;
             let routingLine = '';
             if (routeTotal > 0) {
+                const agreeN = stats.compare_agree || 0;
+                const disagreeN = stats.compare_disagree || 0;
+                if (agreeN + disagreeN > 0) {
+                    const agreePct = Math.round((agreeN / routeTotal) * 100);
+                    const disagreePct = Math.round((disagreeN / routeTotal) * 100);
+                    routingLine = `<div class="run-summary-routing mt-1"><strong>Compare</strong>: `
+                        + `${agreePct}% agree (${agreeN}) · ${disagreePct}% disagree (${disagreeN}) — review disagreements manually</div>`;
+                } else {
                 const debertaN = (stats.deberta_auto || 0) + (stats.deberta_ambiguous || 0);
-                const llmN = (stats.consensus || 0) + (stats.human || 0) + (stats.rejected || 0);
-                const debertaPct = Math.round((debertaN / routeTotal) * 100);
-                const llmPct = Math.round((llmN / routeTotal) * 100);
-                routingLine = `<div class="run-summary-routing mt-1"><strong>Routing</strong>: ${debertaPct}% DeBERTa (${debertaN}) · ${llmPct}% LLM local (${llmN}) — `
-                    + `auto ${stats.deberta_auto || 0}, ambiguous ${stats.deberta_ambiguous || 0}, `
-                    + `consensus ${stats.consensus || 0}, review ${stats.human || 0}, rejected ${stats.rejected || 0}</div>`;
+                const qwenN = (stats.llm_auto || 0) + (stats.consensus || 0);
+                const review = (stats.human || 0) + (stats.rejected || 0);
+                if (debertaN > 0) {
+                    const debertaPct = Math.round((debertaN / routeTotal) * 100);
+                    const qwenPct = Math.round((qwenN / routeTotal) * 100);
+                    const reviewPct = Math.round((review / routeTotal) * 100);
+                    routingLine = `<div class="run-summary-routing mt-1"><strong>Routing</strong>: `
+                        + `${debertaPct}% DeBERTa (${debertaN}) · ${qwenPct}% Qwen (${qwenN}) · ${reviewPct}% review (${review})</div>`;
+                } else {
+                    const annotated = stats.llm_auto || 0;
+                    const annotatedPct = Math.round((annotated / routeTotal) * 100);
+                    const reviewPct = Math.round((review / routeTotal) * 100);
+                    routingLine = `<div class="run-summary-routing mt-1"><strong>Routing</strong>: `
+                        + `${annotatedPct}% Qwen annotated (${annotated}) · ${reviewPct}% needs review (${review})</div>`;
+                }
+                }
             }
+
+            const compareTime = s.compare_time
+                || result.compare_time
+                || computeCompareTotalsFromData(result.data);
+            const compareTimeLabel = s.compare_time_label
+                || result.compare_time_label
+                || compareTime?.label
+                || (compareTime
+                    ? `Qwen ${compareTime.qwen_label} · Cascade ${compareTime.cascade_label} · Diff ${compareTime.delta_label} (${compareTime.faster_label})`
+                    : '');
+            const compareTimeHtml = compareTimeLabel
+                ? `<div class="run-summary-routing mt-1" style="background:#eef6ff;border:1px solid #cfe2ff;border-radius:8px;padding:0.45rem 0.65rem;">
+                        <strong>Temps modèles (totaux)</strong><br>
+                        <span>Qwen: <b>${compareTime?.qwen_label || '—'}</b></span>
+                        &nbsp;·&nbsp;
+                        <span>Cascade: <b>${compareTime?.cascade_label || '—'}</b></span>
+                        &nbsp;·&nbsp;
+                        <span>Diff: <b>${compareTime?.delta_label || '—'}</b> (${compareTime?.faster_label || compareTimeLabel})</span>
+                   </div>`
+                : '';
+
+            const disagreeReport = s.compare_disagreements
+                || result.compare_disagreements
+                || computeCompareDisagreementsFromData(result.data);
+            const disagreeHtml = renderCompareDisagreementHtml(disagreeReport);
+
             statusDiv.innerHTML = `
                 <div class="run-summary-card${isPartial ? ' partial' : ''}">
                     <h6>${s.title || 'Annotation complete'}${isPartial ? ' (partial)' : ''}</h6>
@@ -804,9 +1126,52 @@
                         <span><strong>Pre-filled</strong>: ${s.prefilled_label || ''}</span>
                         <span><strong>Duration</strong>: ${s.duration_label || result.elapsed_label || ''}</span>
                     </div>
+                    ${compareTimeHtml}
                     ${routingLine}
+                    ${disagreeHtml}
                     ${reviewLink}
                 </div>`;
+        }
+
+        function getCascadeMode() {
+            return document.getElementById('cascadeMode')?.value || 'qwen_only';
+        }
+
+        function formatDurationSec(sec) {
+            if (typeof sec !== 'number' || !isFinite(sec)) return '—';
+            return `${sec.toFixed(2)}s`;
+        }
+
+        function formatPipelineCompareBadge(target) {
+            const cmp = target?.pipeline_compare;
+            if (!cmp) return '';
+            const q = cmp.qwen_only || {};
+            const c = cmp.deberta_qwen || {};
+            const qLabel = q.related || q.route || '—';
+            const cRel = c.related || c.route || '—';
+            const cLabel = formatCascadeLabel(cRel, c, cmp);
+            const qDur = formatDurationSec(q.duration_s);
+            const cDur = formatDurationSec(c.duration_s);
+            const bg = cmp.agree ? '#d1e7dd' : '#fff3cd';
+            const fg = cmp.agree ? '#0f5132' : '#664d03';
+            const border = cmp.agree ? '#badbcc' : '#ffecb5';
+            let speed = '';
+            if (cmp.faster === 'qwen') speed = ' · ⚡ Qwen plus rapide';
+            else if (cmp.faster === 'cascade') speed = ' · ⚡ Cascade plus rapide';
+            else if (cmp.faster === 'tie') speed = ' · ⚡ égalité';
+            return `<span class="badge" style="background:${bg};color:${fg};border:1px solid ${border};font-size:0.75rem;padding:4px 8px;border-radius:6px;margin-left:8px;"><i class="fas fa-code-compare me-1"></i>Qwen: ${qLabel} (${qDur}) · Cascade: ${cLabel} (${cDur})${speed}</span>`;
+        }
+
+        function syncCascadeModeUi() {
+            const mode = getCascadeMode();
+            const thresholdInput = document.getElementById('autoThreshold');
+            if (thresholdInput) {
+                const needsTau = mode === 'deberta_qwen' || mode === 'compare';
+                thresholdInput.disabled = !needsTau;
+                thresholdInput.title = needsTau
+                    ? 'DeBERTa confidence threshold (default 0.95). Higher = fewer LLM calls.'
+                    : 'τ applies only in DeBERTa + Qwen or Compare mode.';
+            }
         }
 
         function shouldShowRunEstimate() {
@@ -819,6 +1184,25 @@
             currentIndex = idx;
             displayCurrentItem();
             document.getElementById('navigationPanel').scrollIntoView({ behavior: 'smooth' });
+        };
+
+        window.goToTarget = function(refIdx, targetIdx) {
+            window.goToReference(refIdx);
+            setTimeout(() => {
+                const collapsed = document.getElementById(`collapsed-target-${targetIdx}`);
+                const expanded = document.getElementById(`expanded-target-${targetIdx}`);
+                if (collapsed) collapsed.style.display = 'none';
+                if (expanded) {
+                    expanded.style.display = 'block';
+                    expanded.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    expanded.style.outline = '2px solid #f0ad4e';
+                    expanded.style.outlineOffset = '2px';
+                    setTimeout(() => {
+                        expanded.style.outline = '';
+                        expanded.style.outlineOffset = '';
+                    }, 2500);
+                }
+            }, 120);
         };
 
         async function refreshRunEstimate() {
@@ -834,11 +1218,20 @@
                 const resp = await fetch('/api/auto_annotate/estimate', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ start_index: start, end_index: end })
+                    body: JSON.stringify({
+                        start_index: start,
+                        end_index: end,
+                        cascade_mode: getCascadeMode(),
+                    })
                 });
                 const est = await resp.json();
                 if (!resp.ok) {
                     hint.textContent = est.error || '';
+                    hint.className = 'run-estimate-hint';
+                    return;
+                }
+                if (!est.estimate_available || !est.estimated_label) {
+                    hint.textContent = '';
                     hint.className = 'run-estimate-hint';
                     return;
                 }
@@ -1095,6 +1488,23 @@
             });
         });
 
+        const CASCADE_MODE_KEY = 'runModelCascadeMode';
+        const cascadeModeEl = document.getElementById('cascadeMode');
+        if (cascadeModeEl) {
+            const savedMode = localStorage.getItem(CASCADE_MODE_KEY);
+            if (savedMode === 'qwen_only' || savedMode === 'deberta_qwen' || savedMode === 'compare') {
+                cascadeModeEl.value = savedMode;
+            }
+            cascadeModeEl.addEventListener('change', () => {
+                localStorage.setItem(CASCADE_MODE_KEY, getCascadeMode());
+                syncCascadeModeUi();
+                const status = document.getElementById('autoAnnotateStatus');
+                if (status?.querySelector('.run-summary-card')) status.innerHTML = '';
+                refreshRunEstimate();
+            });
+            syncCascadeModeUi();
+        }
+
         async function resolveRunStartIndex(start, end, forceReannotate) {
             if (forceReannotate || !currentData) return { start, resumed: false };
             try {
@@ -1133,11 +1543,11 @@
                 return '<span class="badge bg-secondary target-status-badge">Dismissed</span>';
             }
             const route = target?.cascade_route || '';
-            if (route === 'human' || route === 'rejected') {
+            if (route === 'human' || route === 'rejected' || route === 'compare_disagree') {
                 return '<span class="badge bg-warning text-dark target-status-badge">Needs validation</span>';
             }
             if (isTargetAnnotatedLocal(target)) {
-                if (['deberta_auto', 'deberta_ambiguous', 'consensus'].includes(route)) {
+                if (['llm_auto', 'deberta_auto', 'deberta_ambiguous', 'consensus', 'compare_agree'].includes(route)) {
                     return '<span class="badge bg-success target-status-badge">Pre-filled (auto)</span>';
                 }
                 return '<span class="badge bg-primary target-status-badge">Manually annotated</span>';
@@ -1283,13 +1693,18 @@
                 
                 const statusBadge = targetStatusBadge(news);
                 const route = news.cascade_route || '';
+                const cmp = news.pipeline_compare || null;
                 let badgeHtml = '';
-                if (route === 'deberta_auto') {
+                if (route === 'llm_auto') {
+                    badgeHtml = `<span class="badge" style="background: #cfe2ff; color: #084298; border: 1px solid #b6d4fe; font-size: 0.75rem; padding: 4px 8px; border-radius: 6px; margin-left: 8px;"><i class="fas fa-brain me-1"></i>Qwen LLM</span>`;
+                } else if (route === 'deberta_auto') {
                     badgeHtml = `<span class="badge" style="background: #d1e7dd; color: #0f5132; border: 1px solid #badbcc; font-size: 0.75rem; padding: 4px 8px; border-radius: 6px; margin-left: 8px;"><i class="fas fa-robot me-1"></i>DeBERTa (High Conf: ${Math.round(conf*100)}%)</span>`;
                 } else if (route === 'deberta_ambiguous') {
                     badgeHtml = `<span class="badge" style="background: #cff4fc; color: #055160; border: 1px solid #b6effb; font-size: 0.75rem; padding: 4px 8px; border-radius: 6px; margin-left: 8px;"><i class="fas fa-robot me-1"></i>DeBERTa (${Math.round(conf*100)}%)</span>`;
                 } else if (route === 'consensus') {
                     badgeHtml = `<span class="badge" style="background: #cfe2ff; color: #084298; border: 1px solid #b6d4fe; font-size: 0.75rem; padding: 4px 8px; border-radius: 6px; margin-left: 8px;"><i class="fas fa-brain me-1"></i>LLM Consensus (Conf: ${Math.round(conf*100)}%)</span>`;
+                } else if (route === 'compare_agree' || route === 'compare_disagree') {
+                    badgeHtml = formatPipelineCompareBadge(news);
                 } else if (route === 'human') {
                     badgeHtml = `<span class="badge" style="background: #fff3cd; color: #664d03; border: 1px solid #ffecb5; font-size: 0.75rem; padding: 4px 8px; border-radius: 6px; margin-left: 8px;"><i class="fas fa-user-edit me-1"></i>Needs Review (Disagreement)</span>`;
                 } else if (route === 'rejected') {
@@ -1329,9 +1744,58 @@
                             <div class="mb-2"><b>Target topic:</b> ${esc(news.topic || '')}</div>
                             <div><b>Metadata:</b> <pre style="background:#f8f9fa; border-radius:6px; padding:8px; overflow-x:auto;">${prettyMeta(news.metadata)}</pre></div>
                             <div class="mt-2 p-2" style="background:#e9ecef; border-radius:6px; font-family: monospace;">
-                                <b>Saved in JSON:</b> 
+                                <b>Saved in JSON:</b>
                                 ${rel ? `<span style="color:#055160;">"related": <b>"${rel}"</b>, "similarity_annotation": <b>${sim}</b></span>` : '<span class="text-muted"><i>None</i></span>'}
                             </div>
+                            ${cmp ? (() => {
+                                const q = cmp.qwen_only || {};
+                                const d = cmp.deberta_qwen || {};
+                                const qRel = q.related ?? '—';
+                                const qSim = (q.llm_sim ?? q.similarity_annotation ?? '—');
+                                const qRoute = q.route ?? '—';
+                                const qDuration = q.duration_s;
+                                const dRel = d.related ?? '—';
+                                const dRoute = d.route ?? '—';
+                                const dConf = (d.deberta_conf ?? d.llm_confidence ?? d.deberta_confidence ?? '—');
+                                const dDebertaPred = d.deberta_pred ?? '—';
+                                const llmSkipped = dRoute === 'deberta_auto' || dRoute === 'deberta_ambiguous';
+                                const dLlmPred = d.llm_pred ?? (llmSkipped ? 'non appelé' : '—');
+                                const dSim = d.llm_sim ?? d.similarity_annotation ?? d.deberta_sim ?? '—';
+                                const dSimLabel = d.llm_sim != null ? 'sim' : (d.similarity_annotation != null || d.deberta_sim != null ? 'sim (DeBERTa)' : 'sim');
+                                const dDuration = d.duration_s;
+                                const agree = !!cmp.agree;
+                                const bg = agree ? '#d1e7dd' : '#fff3cd';
+                                const border = agree ? '#badbcc' : '#ffecb5';
+                                const qDurStr = formatDurationSec(qDuration);
+                                const dDurStr = formatDurationSec(dDuration);
+                                const qOk = typeof qDuration === 'number' && isFinite(qDuration);
+                                const dOk = typeof dDuration === 'number' && isFinite(dDuration);
+                                let speedLine = '';
+                                if (qOk && dOk) {
+                                    const faster = cmp.faster || (Math.abs(qDuration - dDuration) < 1e-9 ? 'tie' : (qDuration > dDuration ? 'cascade' : 'qwen'));
+                                    const delta = (cmp.duration_delta_s != null ? Number(cmp.duration_delta_s) : Math.abs(qDuration - dDuration)).toFixed(2);
+                                    if (faster === 'tie') {
+                                        speedLine = `<div class="mt-1"><span class="badge bg-secondary">Temps</span> Qwen <b>${qDurStr}</b> · Cascade <b>${dDurStr}</b> · <b>égalité</b></div>`;
+                                    } else {
+                                        const name = faster === 'qwen' ? 'Qwen' : 'Cascade';
+                                        speedLine = `<div class="mt-1"><span class="badge bg-info text-dark">Temps</span> Qwen <b>${qDurStr}</b> · Cascade <b>${dDurStr}</b> · <b>plus rapide : ${name}</b> (écart ${delta}s)</div>`;
+                                    }
+                                } else {
+                                    speedLine = `<div class="mt-1 text-muted"><span class="badge bg-secondary">Temps</span> Qwen <b>${qDurStr}</b> · Cascade <b>${dDurStr}</b> <span class="small">(relancer Compare pour mesurer)</span></div>`;
+                                }
+                                const dSource = cascadeSourceFromSide(d, cmp);
+                                const dBadge = `Cascade (${dSource.label})`;
+                                return `
+                                    <div class="mt-2 p-2" style="background:${bg}; border:1px solid ${border}; border-radius:6px;">
+                                        <b>Compare (détail)</b>
+                                        <div class="small mt-1">
+                                            <div><span class="badge bg-primary">Qwen</span> route: <b>${qRoute}</b> · related: <b>${qRel}</b> · sim: <b>${qSim}</b> · durée: <b>${qDurStr}</b></div>
+                                            <div class="mt-1"><span class="badge ${agree ? 'bg-success' : 'bg-warning'}">${dBadge}</span> route: <b>${dRoute}</b> · related: <b>${dRel}</b> · DeBERTa: <b>${dDebertaPred}</b> (conf <b>${dConf}</b>) · LLM: <b>${dLlmPred}</b> · ${dSimLabel}: <b>${dSim}</b> · durée: <b>${dDurStr}</b>${llmSkipped && dRoute === 'deberta_ambiguous' ? ' <span class="text-muted">(Qwen réservé à supporting/undetermined)</span>' : ''}</div>
+                                            ${speedLine}
+                                        </div>
+                                    </div>
+                                `;
+                            })() : ''}
                         </div>
                         
                         <div class="annotation-section p-3 bg-light rounded border">
@@ -1496,11 +1960,13 @@
             let targetsTotal = 0;
             let targetsAnnotated = 0;
             let refsComplete = 0;
+            let refsPartial = 0;
             const refsTotal = Math.max(0, end - start + 1);
             if (!currentData) {
                 return {
                     refs_total: refsTotal,
                     refs_complete: 0,
+                    refs_partial: 0,
                     targets_total: 0,
                     targets_annotated: 0,
                     targets_remaining: 0,
@@ -1513,6 +1979,7 @@
                 const status = item.annotation_status
                     || (item.is_processed ? 'complete' : 'pending');
                 if (status === 'complete') refsComplete += 1;
+                else if (status === 'partial') refsPartial += 1;
                 const targets = item.database || [];
                 targetsTotal += targets.length;
                 for (const target of targets) {
@@ -1523,6 +1990,7 @@
             return {
                 refs_total: refsTotal,
                 refs_complete: refsComplete,
+                refs_partial: refsPartial,
                 targets_total: targetsTotal,
                 targets_annotated: targetsAnnotated,
                 targets_remaining: targetsRemaining,
@@ -1542,6 +2010,7 @@
             );
             merged.targets_annotated = est?.targets_annotated ?? local.targets_annotated ?? 0;
             merged.refs_complete = est?.refs_complete ?? local.refs_complete ?? 0;
+            merged.refs_partial = est?.refs_partial ?? local.refs_partial ?? 0;
             if (est?.targets_remaining != null) {
                 merged.targets_remaining = est.targets_remaining;
             } else {
@@ -1550,23 +2019,102 @@
             return merged;
         }
 
-        function buildReannotateConfirmMessage(stats) {
-            const parts = [
-                'This range already contains annotations.',
-                `${stats.targets_annotated ?? 0} target(s) annotated out of ${stats.targets_total_in_range ?? stats.targets_total ?? 0}.`,
-            ];
-            if (stats.refs_complete) {
-                parts.push(`${stats.refs_complete} complete reference(s).`);
-            }
-            parts.push(
-                '',
-                'Are you sure you want to re-annotate?',
-                'Existing annotations (manual or automatic) will be overwritten.'
-            );
-            if (stats.estimated_label) {
-                parts.push('', `Estimated duration: ~${stats.estimated_label}${stats.is_cpu ? ' (slow CPU)' : ''}.`);
-            }
-            return parts.join('\n');
+        function promptReannotateConfirm(stats) {
+            return new Promise((resolve) => {
+                const modalEl = document.getElementById('reannotateConfirmModal');
+                if (!modalEl || typeof bootstrap === 'undefined') {
+                    const total = stats.targets_total_in_range ?? stats.targets_total ?? 0;
+                    const annotated = stats.targets_annotated ?? 0;
+                    const remaining = stats.targets_remaining ?? Math.max(0, total - annotated);
+                    const allDone = Boolean(stats.all_annotated) || remaining === 0;
+                    const ok = window.confirm(
+                        allDone
+                            ? `Plage déjà entièrement annotée (${annotated}/${total}).\n\nOK = supprimer et réannoter\nAnnuler = ne rien faire`
+                            : `Annotations partielles (${annotated}/${total}, ${remaining} restantes).\n\nOK = supprimer et réannoter\nAnnuler = reprendre sans écraser`
+                    );
+                    resolve(ok ? 'reannotate' : (allDone ? 'cancel' : 'resume'));
+                    return;
+                }
+
+                const total = stats.targets_total_in_range ?? stats.targets_total ?? 0;
+                const annotated = stats.targets_annotated ?? 0;
+                const remaining = stats.targets_remaining ?? Math.max(0, total - annotated);
+                const allDone = Boolean(stats.all_annotated) || remaining === 0;
+                const refsComplete = stats.refs_complete ?? 0;
+                const refsPartial = stats.refs_partial ?? 0;
+
+                const lead = document.getElementById('reannotateConfirmLead');
+                const statsEl = document.getElementById('reannotateConfirmStats');
+                const hint = document.getElementById('reannotateConfirmHint');
+                const estimate = document.getElementById('reannotateConfirmEstimate');
+                const resumeBtn = document.getElementById('reannotateResumeBtn');
+                const forceBtn = document.getElementById('reannotateForceBtn');
+                const cancelBtn = document.getElementById('reannotateCancelBtn');
+
+                if (lead) {
+                    lead.textContent = allDone
+                        ? 'Cette plage est déjà entièrement annotée.'
+                        : 'Cette plage contient déjà des annotations (état partiel).';
+                }
+                if (statsEl) {
+                    statsEl.innerHTML = `
+                        <div class="reann-stat">
+                            <span class="label">Annotées</span>
+                            <span class="value">${annotated} / ${total}</span>
+                        </div>
+                        <div class="reann-stat">
+                            <span class="label">${allDone ? 'Restantes' : 'À traiter'}</span>
+                            <span class="value">${remaining}</span>
+                        </div>
+                        <div class="reann-stat">
+                            <span class="label">Réfs complètes</span>
+                            <span class="value">${refsComplete}</span>
+                        </div>
+                        <div class="reann-stat">
+                            <span class="label">Réfs partielles</span>
+                            <span class="value">${refsPartial}</span>
+                        </div>
+                    `;
+                }
+                if (hint) {
+                    hint.innerHTML = allDone
+                        ? '<strong>Supprimer et réannoter</strong> efface les annotations existantes (manuelles ou auto) puis relance le modèle sur toute la plage.'
+                        : '<strong>Reprendre sans écraser</strong> ignore les cibles déjà annotées.<br><strong>Supprimer et réannoter</strong> efface tout et recommence depuis le début.';
+                }
+                if (estimate) {
+                    if (stats.estimate_available && stats.estimated_label) {
+                        estimate.style.display = '';
+                        estimate.textContent = `Durée estimée : ~${stats.estimated_label}${stats.is_cpu ? ' (CPU lent)' : ''}.`;
+                    } else {
+                        estimate.style.display = 'none';
+                        estimate.textContent = '';
+                    }
+                }
+                if (resumeBtn) resumeBtn.style.display = allDone ? 'none' : '';
+
+                const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+                let settled = false;
+                const finish = (value) => {
+                    if (settled) return;
+                    settled = true;
+                    forceBtn?.removeEventListener('click', onForce);
+                    resumeBtn?.removeEventListener('click', onResume);
+                    cancelBtn?.removeEventListener('click', onCancel);
+                    modalEl.removeEventListener('hidden.bs.modal', onHidden);
+                    resolve(value);
+                    modal.hide();
+                };
+                const onForce = () => finish('reannotate');
+                const onResume = () => finish('resume');
+                const onCancel = () => finish('cancel');
+                const onHidden = () => finish('cancel');
+
+                forceBtn?.addEventListener('click', onForce);
+                resumeBtn?.addEventListener('click', onResume);
+                cancelBtn?.addEventListener('click', onCancel);
+                modalEl.addEventListener('hidden.bs.modal', onHidden);
+                modal.show();
+            });
         }
 
         async function confirmRunModelLaunch(start, end) {
@@ -1584,21 +2132,21 @@
             const stats = mergeAnnotationStats(est, localStats);
             let forceReannotate = false;
 
-            if (
-                stats.has_existing_annotations
-                && (stats.all_annotated || (stats.targets_remaining ?? 0) === 0)
-            ) {
+            if (stats.has_existing_annotations) {
                 let estForce = est;
                 try {
                     const forced = await fetchRunEstimate(start, end, true);
                     if (forced.resp.ok) estForce = { ...stats, ...forced.est };
                 } catch (e) { /* ignore */ }
-                const wantReannotate = confirm(buildReannotateConfirmMessage(estForce || stats));
-                if (!wantReannotate) {
+                const choice = await promptReannotateConfirm(estForce || stats);
+                if (choice === 'reannotate') {
+                    forceReannotate = true;
+                    if (estForce) est = estForce;
+                } else if (choice === 'resume') {
+                    forceReannotate = false;
+                } else {
                     return { proceed: false, est: stats, forceReannotate: false };
                 }
-                forceReannotate = true;
-                if (estForce) est = estForce;
             }
 
             return { proceed: true, est: stats, forceReannotate };
@@ -1612,6 +2160,7 @@
                     start_index: start,
                     end_index: end,
                     force_reannotate: forceReannotate,
+                    cascade_mode: getCascadeMode(),
                 }),
             });
             const est = await resp.json();
@@ -1681,6 +2230,7 @@
                         end_index: end,
                         threshold: Number.isNaN(threshold) ? 0.95 : threshold,
                         force_reannotate: forceReannotate,
+                        cascade_mode: getCascadeMode(),
                     })
                 });
                 const result = await response.json();

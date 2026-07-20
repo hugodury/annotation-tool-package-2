@@ -30,6 +30,8 @@
 
 ### Logical constraints (scores)
 - **Threshold:** If `similarity_annotation` $\le$ 0.2 → `related` **MUST** be `not_related`.
+- **0.3 band:** If score is around **0.3** (strictly above 0.2 and below 0.4), `not_related` is **still allowed** when the link is weak/topical only.
+- **From 0.4:** If `similarity_annotation` $\ge$ 0.4 → `not_related` is **forbidden**. Use `undetermined`, `supporting`, or `against` only.
 - **0 vs 0.1:** Use `0.1` only if JSON `topic` matches but there is no factual link; otherwise `0`.
 
 ### Same basis, extra information (critical rule)
@@ -103,9 +105,16 @@ Use the **Dismiss** button in the UI: per-pair (single target) or *Dismiss secti
 ## 4. QUICK DECISION FLOW (per pair)
 
 1. **Score $\le$ 0.2?** → `not_related`.
-2. **Exact contradiction or contradictory overlap?** → `against`.
-3. **Same claim/POV reinforced, 100% sure?** (incl. same basis + non-contradictory extra info) → `supporting`.
-4. **Otherwise** (overlap but neutral or ambiguous) → `undetermined`.
+2. **Score $\ge$ 0.4?** → never `not_related` (choose among `against` / `supporting` / `undetermined`).
+3. **Exact contradiction or contradictory overlap?** → `against`.
+4. **Same claim/POV reinforced, 100% sure?** (incl. same basis + non-contradictory extra info) → `supporting`.
+5. **Otherwise** (overlap but neutral, ambiguous, or any doubt) → `undetermined`.
+
+**Critical — do not confuse `supporting` and `undetermined`:**
+- Same topic / same event / high similarity does **NOT** mean `supporting`.
+- `supporting` = explicit agreement on the **same claim/POV**, only if completely sure.
+- If unsure, partial overlap, or no clear stance → **`undetermined`** (default for ambiguous related pairs).
+- Never default to `supporting`.
 
 ---
 

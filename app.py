@@ -41,6 +41,7 @@ from run_model_job import (  # noqa: E402
     request_cancel_batch,
     start_batch,
 )
+from cascade.core import normalize_cascade_mode  # noqa: E402
 
 # Lazy loaded models
 sbert_model = None
@@ -1112,6 +1113,7 @@ def api_auto_annotate_estimate():
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
     force_reannotate = bool(req.get('force_reannotate', False))
+    cascade_mode = normalize_cascade_mode(req.get('cascade_mode'))
     cfg = _load_cascade_config()
     report = build_report(BASE_DIR, cfg)
     device = report.get('hardware', {}).get('gpu', {}).get('device', 'cpu')
@@ -1130,6 +1132,7 @@ def api_auto_annotate_estimate():
         models_warm=models_warm_in_session(),
         base_dir=BASE_DIR,
         filename=original_filename,
+        cascade_mode=cascade_mode,
     )
     return jsonify(est)
 
@@ -1173,6 +1176,7 @@ def auto_annotate():
         return jsonify({'error': str(e)}), 400
 
     force_reannotate = bool(req.get('force_reannotate', False))
+    cascade_mode = normalize_cascade_mode(req.get('cascade_mode'))
     range_stats = count_range_annotation_stats(
         data,
         start_index,
@@ -1180,18 +1184,21 @@ def auto_annotate():
         ref_status_fn=reference_status_from_item,
         target_is_annotated_fn=_target_is_annotated,
     )
-    if range_stats['all_annotated'] and not force_reannotate:
-        return jsonify({
-            'error': 'This range is already fully annotated.',
-            'needs_confirmation': True,
-            'message': (
-                f"All targets are already annotated "
-                f"({range_stats['targets_annotated']} of {range_stats['targets_total']}, "
-                f"{range_stats['refs_complete']} complete reference(s)). "
-                "Confirm re-annotation to overwrite existing annotations."
-            ),
-            **range_stats,
-        }), 409
+    if range_stats['has_existing_annotations'] and not force_reannotate:
+        if range_stats['all_annotated']:
+            return jsonify({
+                'error': 'This range is already fully annotated.',
+                'needs_confirmation': True,
+                'message': (
+                    f"All targets are already annotated "
+                    f"({range_stats['targets_annotated']} of {range_stats['targets_total']}, "
+                    f"{range_stats['refs_complete']} complete reference(s)). "
+                    "Confirm re-annotation to overwrite existing annotations."
+                ),
+                **range_stats,
+            }), 409
+        # Partial: allow resume without force_reannotate (skip already annotated).
+        # Overwrite requires force_reannotate=true after UI confirmation.
 
     cfg_path = BASE_DIR / "cascade" / "config.json"
     cfg = _load_cascade_config()
@@ -1231,6 +1238,7 @@ def auto_annotate():
         force_reannotate=force_reannotate,
         backup_path=str(backup_path) if backup_path else None,
         app_module=sys.modules[__name__],
+        cascade_mode=cascade_mode,
     )
     if not started:
         return jsonify({'error': 'Could not start batch.'}), 409
