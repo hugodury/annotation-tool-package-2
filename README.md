@@ -242,7 +242,7 @@ Bloc d'aide intégré **« How Run Model works »** sous les champs d'index.
 - **Clear processing cache (SQLite)** : vide le cache local **sans** supprimer les JSON sur le disque
 - **Clear Run Model logs** : vide le log de la session serveur courante (`run_model_session.log`)
 
-Protocole détaillé : `protocole.md`
+Protocole (P3) : `cascade/protocol.md`
 
 ---
 

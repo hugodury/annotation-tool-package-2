@@ -9,7 +9,7 @@
   "deberta_model_path": "models/fine_tuned_deberta_base_expanded",
   "score_max": 0.8,
   "score_not_related_cutoff": 0.2,
-  "score_not_related_max": 0.4,
+  "score_not_related_max": 0.3,
   "similarity_defaults": {
     "not_related": 0.15,
     "against": 0.65,
@@ -55,6 +55,8 @@
         "deberta_auto": 0.3,
         "deberta_ambiguous": 0.35,
         "consensus": 16,
+        "compare_agree": 14.5,
+        "compare_disagree": 14.5,
         "human": 14,
         "rejected": 15
       },
@@ -63,6 +65,8 @@
         "deberta_auto": 0.2,
         "deberta_ambiguous": 0.25,
         "consensus": 8,
+        "compare_agree": 7.5,
+        "compare_disagree": 7.5,
         "human": 7,
         "rejected": 8
       }

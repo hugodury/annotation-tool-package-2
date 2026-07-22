@@ -874,17 +874,32 @@
             if (!Array.isArray(data)) return null;
             let qwen = 0;
             let cascade = 0;
+            let deberta = 0;
+            let cascadeLlm = 0;
+            let nDebertaOnly = 0;
+            let nCascadeLlm = 0;
             let pairs = 0;
             for (const item of data) {
                 for (const target of (item.database || [])) {
                     const cmp = target.pipeline_compare;
                     if (!cmp) continue;
                     const q = cmp.qwen_only?.duration_s;
-                    const c = cmp.deberta_qwen?.duration_s;
+                    const cSide = cmp.deberta_qwen || {};
+                    const c = cSide.duration_s;
                     if (typeof q === 'number' && isFinite(q) && typeof c === 'number' && isFinite(c)) {
                         qwen += q;
                         cascade += c;
                         pairs += 1;
+                        const deb = cSide.deberta_duration_s;
+                        const llm = cSide.cascade_llm_duration_s;
+                        if (typeof deb === 'number' && isFinite(deb)) deberta += deb;
+                        else deberta += Math.max(0, c - (typeof llm === 'number' && isFinite(llm) ? llm : 0));
+                        if (typeof llm === 'number' && isFinite(llm) && llm > 0) {
+                            cascadeLlm += llm;
+                            nCascadeLlm += 1;
+                        } else {
+                            nDebertaOnly += 1;
+                        }
                     }
                 }
             }
@@ -895,7 +910,7 @@
             if (delta >= 1e-9) {
                 if (qwen < cascade) {
                     faster = 'qwen';
-                    fasterLabel = `Qwen plus rapide (−${formatElapsedLabel(delta)})`;
+                    fasterLabel = `Qwen seul plus rapide (−${formatElapsedLabel(delta)})`;
                 } else {
                     faster = 'cascade';
                     fasterLabel = `Cascade plus rapide (−${formatElapsedLabel(delta)})`;
@@ -904,14 +919,20 @@
             return {
                 qwen_s: qwen,
                 cascade_s: cascade,
+                cascade_deberta_s: deberta,
+                cascade_llm_s: cascadeLlm,
+                n_deberta_only: nDebertaOnly,
+                n_cascade_llm: nCascadeLlm,
                 delta_s: delta,
                 faster,
                 qwen_label: formatElapsedLabel(qwen),
                 cascade_label: formatElapsedLabel(cascade),
+                cascade_deberta_label: formatElapsedLabel(deberta),
+                cascade_llm_label: formatElapsedLabel(cascadeLlm),
                 delta_label: formatElapsedLabel(delta),
                 faster_label: fasterLabel,
                 pairs,
-                label: `Qwen ${formatElapsedLabel(qwen)} · Cascade ${formatElapsedLabel(cascade)} · Diff ${formatElapsedLabel(delta)} (${fasterLabel})`,
+                label: `Qwen seul ${formatElapsedLabel(qwen)} − Cascade (DeBERTa ${formatElapsedLabel(deberta)} + Qwen-cascade ${formatElapsedLabel(cascadeLlm)} = ${formatElapsedLabel(cascade)}) → Diff ${formatElapsedLabel(delta)} (${fasterLabel})`,
             };
         }
 
@@ -967,7 +988,9 @@
                     const isDisagree = target.cascade_route === 'compare_disagree' || cmp.agree === false;
                     if (!isDisagree) return;
                     const q = cmp.qwen_only?.related || cmp.qwen_only?.llm_pred || target.llm_pred || '?';
-                    const c = cmp.deberta_qwen?.related || cmp.deberta_qwen?.deberta_pred || cmp.deberta_qwen?.llm_pred || target.deberta_pred || '?';
+                    // llm_pred avant deberta_pred (évite faux « Qwen ≠ Cascade (Qwen) »)
+                    const c = cmp.deberta_qwen?.related || cmp.deberta_qwen?.llm_pred || cmp.deberta_qwen?.deberta_pred || target.deberta_pred || '?';
+                    if (q !== '?' && q === c) return;
                     const src = cascadeSourceFromSide(cmp.deberta_qwen, cmp);
                     const cascadeDisplay = `${c} (${src.label})`;
                     const pair = `${q} ≠ ${cascadeDisplay}`;
@@ -1103,14 +1126,23 @@
                 || (compareTime
                     ? `Qwen ${compareTime.qwen_label} · Cascade ${compareTime.cascade_label} · Diff ${compareTime.delta_label} (${compareTime.faster_label})`
                     : '');
-            const compareTimeHtml = compareTimeLabel
+            const compareTimeHtml = compareTime
                 ? `<div class="run-summary-routing mt-1" style="background:#eef6ff;border:1px solid #cfe2ff;border-radius:8px;padding:0.45rem 0.65rem;">
-                        <strong>Temps modèles (totaux)</strong><br>
-                        <span>Qwen: <b>${compareTime?.qwen_label || '—'}</b></span>
-                        &nbsp;·&nbsp;
-                        <span>Cascade: <b>${compareTime?.cascade_label || '—'}</b></span>
-                        &nbsp;·&nbsp;
-                        <span>Diff: <b>${compareTime?.delta_label || '—'}</b> (${compareTime?.faster_label || compareTimeLabel})</span>
+                        <strong>Temps modèles (totaux)</strong>
+                        <div class="mt-1"><b>1. Qwen seul</b>: ${compareTime.qwen_label || '—'}</div>
+                        <div class="mt-1"><b>2. Cascade</b> = DeBERTa + Qwen-cascade :
+                          <b>${compareTime.cascade_label || '—'}</b>
+                          <div class="small text-muted ms-2">
+                            DeBERTa: ${compareTime.cascade_deberta_label || '—'}
+                            (${compareTime.n_deberta_only ?? '—'} cibles sans LLM)
+                            + Qwen-cascade: ${compareTime.cascade_llm_label || '—'}
+                            (${compareTime.n_cascade_llm ?? '—'} cibles avec LLM)
+                          </div>
+                        </div>
+                        <div class="mt-1"><b>Diff</b> (Qwen seul − Cascade DeBERTa+Qwen) :
+                          <b>${compareTime.delta_label || '—'}</b>
+                          — ${compareTime.faster_label || '—'}
+                        </div>
                    </div>`
                 : '';
 

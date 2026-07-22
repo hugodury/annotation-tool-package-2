@@ -617,6 +617,8 @@ def _default_sec_per_route(device_type: str, est_cfg: dict) -> dict[str, float]:
         "deberta_auto": 0.30,
         "deberta_ambiguous": 0.35,
         "consensus": 16.0,
+        "compare_agree": 14.5,
+        "compare_disagree": 14.5,
         "human": 14.0,
         "rejected": 15.0,
     }
@@ -625,13 +627,18 @@ def _default_sec_per_route(device_type: str, est_cfg: dict) -> dict[str, float]:
         "deberta_auto": 0.20,
         "deberta_ambiguous": 0.25,
         "consensus": 8.0,
+        "compare_agree": 7.5,
+        "compare_disagree": 7.5,
         "human": 7.0,
         "rejected": 8.0,
     }
     base = fallback_cpu if is_cpu else fallback_gpu
     if device_type == "mps":
         base = {r: v * 0.85 for r, v in fallback_gpu.items()}
-    return {r: float(cfg_map.get(r, base[r])) for r in KNOWN_ROUTES}
+    return {
+        r: float(cfg_map.get(r, base.get(r, 10.0 if is_cpu else 5.0)))
+        for r in KNOWN_ROUTES
+    }
 
 
 def _llm_fraction(fracs: dict[str, float]) -> float:
@@ -1546,13 +1553,18 @@ def build_compare_disagreement_report(
                 or target.get("llm_pred")
                 or "?"
             )
+            # Preférer llm_pred à deberta_pred : sinon cascade→human affiche
+            # l'undetermined DeBERTa alors que Qwen-cascade a le même label que Qwen-only.
             cascade_label = (
                 cascade_side.get("related")
-                or cascade_side.get("deberta_pred")
                 or cascade_side.get("llm_pred")
+                or cascade_side.get("deberta_pred")
                 or target.get("deberta_pred")
                 or "?"
             )
+            # Faux désaccord déjà stocké (agree=False car related cascade était None).
+            if qwen_label != "?" and qwen_label == cascade_label:
+                continue
             source, source_label = _infer_cascade_source_from_side(cascade_side)
             if cmp.get("cascade_source") in {"deberta", "qwen"}:
                 source = cmp["cascade_source"]
@@ -1654,33 +1666,46 @@ def build_batch_summary(
     if compare_durations and int(compare_durations.get("pairs") or 0) > 0:
         qwen_s = float(compare_durations.get("qwen_s") or 0.0)
         cascade_s = float(compare_durations.get("cascade_s") or 0.0)
+        deberta_s = float(compare_durations.get("cascade_deberta_s") or 0.0)
+        cascade_llm_s = float(compare_durations.get("cascade_llm_s") or 0.0)
+        n_deberta_only = int(compare_durations.get("n_deberta_only") or 0)
+        n_cascade_llm = int(compare_durations.get("n_cascade_llm") or 0)
         delta_s = abs(qwen_s - cascade_s)
         if abs(qwen_s - cascade_s) < 1e-9:
             faster = "tie"
             faster_label = "égalité"
         elif qwen_s < cascade_s:
             faster = "qwen"
-            faster_label = f"Qwen plus rapide (−{_format_elapsed(delta_s)})"
+            faster_label = f"Qwen seul plus rapide (−{_format_elapsed(delta_s)})"
         else:
             faster = "cascade"
             faster_label = f"Cascade plus rapide (−{_format_elapsed(delta_s)})"
         qwen_label = _format_elapsed(qwen_s)
         cascade_label = _format_elapsed(cascade_s)
         delta_label = _format_elapsed(delta_s)
+        deberta_label = _format_elapsed(deberta_s)
+        cascade_llm_label = _format_elapsed(cascade_llm_s)
         summary["compare_time"] = {
             "qwen_s": round(qwen_s, 2),
             "cascade_s": round(cascade_s, 2),
+            "cascade_deberta_s": round(deberta_s, 2),
+            "cascade_llm_s": round(cascade_llm_s, 2),
+            "n_deberta_only": n_deberta_only,
+            "n_cascade_llm": n_cascade_llm,
             "delta_s": round(delta_s, 2),
             "faster": faster,
             "qwen_label": qwen_label,
             "cascade_label": cascade_label,
+            "cascade_deberta_label": deberta_label,
+            "cascade_llm_label": cascade_llm_label,
             "delta_label": delta_label,
             "faster_label": faster_label,
             "pairs": int(compare_durations["pairs"]),
         }
         summary["compare_time_label"] = (
-            f"Qwen {qwen_label} · Cascade {cascade_label} · "
-            f"Diff {delta_label} ({faster_label})"
+            f"Qwen seul {qwen_label} − Cascade (DeBERTa {deberta_label} "
+            f"+ Qwen-cascade {cascade_llm_label} = {cascade_label}) "
+            f"→ Diff {delta_label} ({faster_label})"
         )
         summary["lines"].append(f"Compare timing: {summary['compare_time_label']}")
     if compare_disagreements and int(compare_disagreements.get("count") or 0) > 0:
@@ -1983,6 +2008,10 @@ def _run_batch_inner(
         compare_durations: dict[str, float | int] = {
             "qwen_s": 0.0,
             "cascade_s": 0.0,
+            "cascade_deberta_s": 0.0,
+            "cascade_llm_s": 0.0,
+            "n_deberta_only": 0,
+            "n_cascade_llm": 0,
             "pairs": 0,
         }
 
@@ -2158,7 +2187,8 @@ def _run_batch_inner(
                     target["pipeline_compare"] = out["pipeline_compare"]
                     cmp = out["pipeline_compare"]
                     q_dur = (cmp.get("qwen_only") or {}).get("duration_s")
-                    c_dur = (cmp.get("deberta_qwen") or {}).get("duration_s")
+                    c_side = cmp.get("deberta_qwen") or {}
+                    c_dur = c_side.get("duration_s")
                     if isinstance(q_dur, (int, float)) and isinstance(c_dur, (int, float)):
                         compare_durations["qwen_s"] = (
                             float(compare_durations["qwen_s"]) + float(q_dur)
@@ -2166,6 +2196,31 @@ def _run_batch_inner(
                         compare_durations["cascade_s"] = (
                             float(compare_durations["cascade_s"]) + float(c_dur)
                         )
+                        deb_dur = c_side.get("deberta_duration_s")
+                        llm_dur = c_side.get("cascade_llm_duration_s")
+                        if isinstance(deb_dur, (int, float)):
+                            compare_durations["cascade_deberta_s"] = (
+                                float(compare_durations["cascade_deberta_s"]) + float(deb_dur)
+                            )
+                        else:
+                            # Anciennes annos sans split : tout le temps cascade
+                            # hors LLM connu est attribué à DeBERTa.
+                            llm_fallback = float(llm_dur) if isinstance(llm_dur, (int, float)) else 0.0
+                            compare_durations["cascade_deberta_s"] = (
+                                float(compare_durations["cascade_deberta_s"])
+                                + max(0.0, float(c_dur) - llm_fallback)
+                            )
+                        if isinstance(llm_dur, (int, float)) and float(llm_dur) > 0:
+                            compare_durations["cascade_llm_s"] = (
+                                float(compare_durations["cascade_llm_s"]) + float(llm_dur)
+                            )
+                            compare_durations["n_cascade_llm"] = (
+                                int(compare_durations["n_cascade_llm"]) + 1
+                            )
+                        else:
+                            compare_durations["n_deberta_only"] = (
+                                int(compare_durations["n_deberta_only"]) + 1
+                            )
                         compare_durations["pairs"] = int(compare_durations["pairs"]) + 1
                 if out.get("llm_error"):
                     target["llm_error"] = out["llm_error"]
@@ -2224,6 +2279,8 @@ def _run_batch_inner(
                         target["related"] = enforce_label_sim_consistency(
                             target.get("related"),
                             target["similarity_annotation"],
+                            anchor=anchor_text,
+                            target=target_text,
                         )
                     targets_annotated_count += 1
                     routing_stats[route_name] = routing_stats.get(route_name, 0) + 1

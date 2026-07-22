@@ -65,6 +65,21 @@ def effective_related(route_out: dict) -> str | None:
     return None
 
 
+def compare_related(route_out: dict) -> str | None:
+    """Label comparable en mode Compare (inclut la proposition LLM si human/rejected).
+
+    Sans cela, cascade→human compte toujours comme désaccord même quand
+    Qwen-only et Qwen-cascade ont le même llm_pred.
+    """
+    auto = effective_related(route_out)
+    if auto is not None:
+        return auto
+    llm_pred = route_out.get("llm_pred")
+    if isinstance(llm_pred, str) and llm_pred.strip():
+        return llm_pred.strip()
+    return None
+
+
 def cascade_decision_source(cascade_out: dict) -> str:
     """Qui a produit le label final côté cascade: 'deberta' | 'qwen' | 'unknown'."""
     route = cascade_out.get("route")
@@ -93,8 +108,8 @@ def cascade_source_label(source: str | None) -> str:
 
 
 def build_pipeline_compare(qwen_out: dict, cascade_out: dict) -> dict:
-    qwen_rel = effective_related(qwen_out)
-    cascade_rel = effective_related(cascade_out)
+    qwen_rel = compare_related(qwen_out)
+    cascade_rel = compare_related(cascade_out)
     agree = (
         qwen_rel is not None
         and cascade_rel is not None
@@ -132,6 +147,8 @@ def build_pipeline_compare(qwen_out: dict, cascade_out: dict) -> dict:
             "llm_sim": cascade_out.get("llm_sim"),
             "llm_error": cascade_out.get("llm_error"),
             "duration_s": cascade_dur,
+            "deberta_duration_s": cascade_out.get("deberta_duration_s"),
+            "cascade_llm_duration_s": cascade_out.get("cascade_llm_duration_s"),
             "decision_source": source,
             "decision_source_label": source_label,
         },
@@ -171,10 +188,7 @@ def apply_env_overrides(cfg: dict) -> dict:
 
 
 def load_protocol() -> str:
-    for name in ["protocole.md", "protocol.md"]:
-        p = Path.cwd() / name
-        if p.exists():
-            return p.read_text(encoding="utf-8")
+    """Unique protocole P3 : cascade/protocol.md (complet et concis)."""
     return (CASCADE_DIR / "protocol.md").read_text(encoding="utf-8")
 
 
@@ -195,32 +209,129 @@ def _safe_float(value: Any) -> float | None:
         return float(m.group()) if m else None
 
 
-def enforce_label_sim_consistency(label: str, score: float | None) -> str:
+_BRIDGE_STOP = frozenset(
+    """
+    a an the and or but if in on at to for of from with by as is are was were be been being
+    this that these those it its they them their we our you your he she his her not no nor
+    vs versus over under into about after before between during than then so such also more
+    most other out up down off too very can could may might will would shall should do does
+    did doing done have has had having what which who whom when where why how new best top
+    says say said amid
+    """.split()
+)
+_BRIDGE_MEDIA = frozenset(
+    """
+    forbes reuters bloomberg bbc cnn cnbc abc cbs nbc npr ap associated press globe mail
+    washington post york times nytimes financial ft guardian independent daily newsweek
+    news yahoo msn fox foxnews toronto global
+    """.split()
+)
+# Acronymes 2–3 lettres exclus (mots anglais courants en majuscules dans les titres)
+_ACRONYM_STOP = frozenset("of to in is as or an at by on up it we my be am if no so".split())
+
+
+def _headline_core(text: str) -> str:
+    text = re.sub(r"\s+-\s+[A-Za-z].*$", "", text or "")
+    text = re.sub(r"\[.*?\]", " ", text)
+    return text.strip()
+
+
+def _content_tokens(text: str) -> set[str]:
+    """Tokens utiles pour un pont topical (hors media / stopwords)."""
+    raw = text or ""
+    core = _headline_core(raw)
+    out: set[str] = set()
+    for w in re.findall(r"[A-Za-z][A-Za-z'-]+", core):
+        wl = w.lower().strip("'")
+        if len(wl) < 4 or wl in _BRIDGE_STOP or wl in _BRIDGE_MEDIA:
+            continue
+        out.add(wl)
+    # Acronymes courts (AI, EV, EU, DEI, ECB…) — sinon « AI » était filtré (len < 4)
+    for m in re.findall(r"\b[A-Z]{2,5}\b", core):
+        wl = m.lower()
+        if wl in _ACRONYM_STOP or wl in _BRIDGE_STOP or wl in _BRIDGE_MEDIA:
+            continue
+        out.add(wl)
+    return out
+
+
+def _is_person_directory_headline(text: str) -> bool:
+    """Fiche personne type « Ron Corio - Forbes » (nom court, pas d'accroche news)."""
+    core = _headline_core(text)
+    if not core or len(core) > 55 or ":" in core or "?" in core:
+        return False
+    words = re.findall(r"[A-Za-z']+", core)
+    if not (2 <= len(words) <= 5):
+        return False
+    # Pas de verbe / mot « news » fréquent
+    lower = {w.lower() for w in words}
+    if lower & {"says", "said", "after", "against", "amid", "could", "will", "best", "review"}:
+        return False
+    return True
+
+
+def has_topical_bridge(anchor: str, target: str) -> bool:
+    """Vrai si T_ref et T_n partagent une entité / thème lexical fort.
+
+    Filet anti-crush : Starbucks↔Starbucks, AI↔AI, tips+taxes, lawyers↔lawyers,
+    fiches personnes Forbes↔Forbes. Mets↔Nats / météo↔fundraising restent sans pont.
+    """
+    if _is_person_directory_headline(anchor) and _is_person_directory_headline(target):
+        return True
+    a = _content_tokens(anchor)
+    b = _content_tokens(target)
+    if a & b:
+        return True
+    for x in a:
+        if len(x) < 5:
+            continue
+        for y in b:
+            if len(y) < 5:
+                continue
+            if x.startswith(y) or y.startswith(x):
+                return True
+    return False
+
+
+def enforce_label_sim_consistency(
+    label: str,
+    score: float | None,
+    anchor: str | None = None,
+    target: str | None = None,
+) -> str:
     """Aligne related et similarity (garde-fou post-LLM / post-SBERT).
 
     Logique metier :
-    - sim <= 0.2            => not_related obligatoire
-    - 0.2 < sim < 0.4       => not_related encore autorise (lien faible)
-    - sim >= 0.4            => not_related interdit -> undetermined
-      (supporting/against laisses tels quels s'ils viennent du LLM)
+    - pont topical lexical + not_related  => undetermined (anti-crush T1/T2)
+    - sim <= 0.2 sans pont               => not_related
+    - not_related + sim > 0.3            => undetermined
 
-    Ne convertit JAMAIS vers supporting : undetermined n'est pas supporting.
+    Ne convertit PAS undetermined→not_related sur la bande 0.2–0.3.
+    Ne convertit JAMAIS vers supporting.
     """
     cfg = load_config()
     cutoff = float(cfg["score_not_related_cutoff"])
-    nr_max = float(cfg.get("score_not_related_max", 0.4))
+    nr_max = float(cfg.get("score_not_related_max", 0.3))
     label = label if label in VALID_LABELS else "undetermined"
     s = _safe_float(score)
+    bridge = bool(anchor and target and has_topical_bridge(anchor, target))
+    if bridge and label == "not_related":
+        return "undetermined"
     if s is None:
         return label
     if s <= cutoff:
-        return "not_related"
-    if label == "not_related" and s >= nr_max:
+        return "undetermined" if bridge else "not_related"
+    if label == "not_related" and s > nr_max:
         return "undetermined"
     return label
 
 
-def postprocess_prediction(label: str, score: Any) -> tuple[str, float]:
+def postprocess_prediction(
+    label: str,
+    score: Any,
+    anchor: str | None = None,
+    target: str | None = None,
+) -> tuple[str, float]:
     cfg = load_config()
     score_max = cfg["score_max"]
     label = label if label in VALID_LABELS else "undetermined"
@@ -228,8 +339,11 @@ def postprocess_prediction(label: str, score: Any) -> tuple[str, float]:
     if s is None:
         s = 0.5
     s = max(0.0, min(score_max, s))
-    label = enforce_label_sim_consistency(label, s)
-    return label, round(s, 3)
+    label = enforce_label_sim_consistency(label, s, anchor=anchor, target=target)
+    if label == "undetermined" and anchor and target and has_topical_bridge(anchor, target):
+        # Evite sim 0.1 + undetermined (incoherent) apres correction anti-crush.
+        s = max(s, 0.35)
+    return label, round(min(score_max, s), 3)
 
 
 def parse_llm_json(text: str) -> dict | None:
@@ -289,22 +403,16 @@ def build_prompt(prompt_id: str, anchor: str, target: str, few_shot: list[dict])
     protocol = load_protocol()
     if prompt_id == "P1":
         return f"{protocol}\n\n---\nAnnotate:\n{pair}\nJSON only."
-    # P3: protocole + few-shot + rappel anti-biais supporting
-    reminder = (
-        "HARD RULES before answering:\n"
-        "- similarity <= 0.2 => related MUST be not_related.\n"
-        "- similarity around 0.3 (0.2 < sim < 0.4) => not_related is still allowed if the link is weak.\n"
-        "- similarity >= 0.4 => NEVER not_related "
-        "(use undetermined, supporting, or against only).\n"
-        "- Do NOT confuse supporting and undetermined.\n"
-        "- Same topic/event or high similarity is NOT enough for supporting.\n"
-        "- supporting only if 100% sure of the same claim/POV; "
-        "if any doubt => undetermined.\n"
-        "- Never default to supporting.\n"
-    )
+    # P3: protocole concis + few-shot (garde-fous A/B/C en tête des exemples)
     return (
-        f"{protocol}\n\nFew-shot examples:\n{examples}\n---\n"
-        f"{reminder}\nAnnotate:\n{pair}\nJSON only."
+        f"{protocol}\n\n"
+        "Few-shot examples (mirror these patterns; first three = guardrails A/B/C):\n"
+        f"{examples}\n---\n"
+        "HARD: (1) Shared brand/acronym/topic (Starbucks, AI, tips tax) → NEVER not_related. "
+        "(2) Forbes-style person directory pages (Name - Outlet) → undetermined, not not_related. "
+        "(3) not_related ONLY if zero topical bridge (Mets vs Nats, fundraising vs weather). "
+        "Same claim → supporting. sim > 0.3 → never not_related.\n"
+        f"Annotate:\n{pair}\nJSON only."
     )
 
 
@@ -488,6 +596,8 @@ class CascadeEngine:
                 label, score = postprocess_prediction(
                     parsed.get("related", "undetermined"),
                     parsed.get("similarity_annotation"),
+                    anchor=anchor,
+                    target=target,
                 )
                 llm_conf = float(_safe_float(parsed.get("confidence")) or 0.5)
                 return label, score, llm_conf, None
@@ -610,15 +720,19 @@ class CascadeEngine:
             tau_auto = self.cfg["tau_deberta_auto"]
         tau_reject = self.cfg["tau_disagreement_reject"]
 
+        deberta_start = time.monotonic()
         deberta_label, deberta_conf, deberta_sim = self.deberta_predict(
             anchor, target, should_cancel=should_cancel
         )
+        deberta_duration_s = round(time.monotonic() - deberta_start, 3)
 
         result = self._empty_route_result()
         result.update(
             deberta_pred=deberta_label,
             deberta_conf=round(deberta_conf, 4),
             deberta_sim=deberta_sim,
+            deberta_duration_s=deberta_duration_s,
+            cascade_llm_duration_s=0.0,
         )
 
         if deberta_conf >= tau_auto:
@@ -641,9 +755,11 @@ class CascadeEngine:
             )
             return result
 
+        llm_start = time.monotonic()
         llm_label, llm_score, llm_conf, err = self.llm_predict(
             anchor, target, should_cancel=should_cancel
         )
+        result["cascade_llm_duration_s"] = round(time.monotonic() - llm_start, 3)
         result["llm_pred"] = llm_label
         result["llm_conf"] = round(llm_conf, 4)
         result["llm_sim"] = llm_score
