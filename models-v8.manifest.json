@@ -1,0 +1,56 @@
+{
+  "version": "8.0.0",
+  "description": "Cascade V8 multi-OS: MiniLM + DeBERTa Large + Reranker undetermined. Poids exclus de Git \u2014 distribu\u00e9s via GitHub Release.",
+  "github_release_tag": "v8.0.0",
+  "required_free_gb": 7.0,
+  "required_files": [
+    "models/cascade_v8/config.json",
+    "models/cascade_v8/models/minilm_full_v7/model.safetensors",
+    "models/cascade_v8/models/deberta_large_v8.1/model.safetensors",
+    "models/cascade_v8/models/reranker_undetermined_v8/model.safetensors"
+  ],
+  "checksums": {
+    "models/cascade_v8/models/minilm_full_v7/model.safetensors": "e715fb3f74412ebc16d0e309e9ded52f4df6bc6c071bf58ed670b896d3afa0ae",
+    "models/cascade_v8/models/deberta_large_v8.1/model.safetensors": "7f2ab25a66ed6fa11bbd44bbca3d65a827555f0f0680576516427f077f4002dc",
+    "models/cascade_v8/models/reranker_undetermined_v8/model.safetensors": "88341962d16c2164ca32d4a8548ef55e1949b9f4ec6b1673c8ba9a35792acb4d"
+  },
+  "archives": [
+    {
+      "filename": "vldbench-cascade-v8-meta.tar.gz",
+      "kind": "tar.gz",
+      "urls": [
+        "https://github.com/hugodury/annotation-tool-package-2/releases/download/v8.0.0/vldbench-cascade-v8-meta.tar.gz",
+        "${CASCADE_V8_DOWNLOAD_URL_META}"
+      ]
+    },
+    {
+      "filename": "vldbench-cascade-v8-minilm.safetensors",
+      "kind": "raw",
+      "dest": "models/cascade_v8/models/minilm_full_v7/model.safetensors",
+      "urls": [
+        "https://github.com/hugodury/annotation-tool-package-2/releases/download/v8.0.0/vldbench-cascade-v8-minilm.safetensors",
+        "${CASCADE_V8_DOWNLOAD_URL_MINILM}"
+      ]
+    },
+    {
+      "filename": "vldbench-cascade-v8-deberta.safetensors",
+      "kind": "raw",
+      "dest": "models/cascade_v8/models/deberta_large_v8.1/model.safetensors",
+      "urls": [
+        "https://github.com/hugodury/annotation-tool-package-2/releases/download/v8.0.0/vldbench-cascade-v8-deberta.safetensors",
+        "${CASCADE_V8_DOWNLOAD_URL_DEBERTA}"
+      ]
+    },
+    {
+      "filename": "vldbench-cascade-v8-reranker.safetensors",
+      "kind": "parts",
+      "dest": "models/cascade_v8/models/reranker_undetermined_v8/model.safetensors",
+      "parts": [
+        "vldbench-cascade-v8-reranker.safetensors.part00",
+        "vldbench-cascade-v8-reranker.safetensors.part01"
+      ],
+      "urls_template": "https://github.com/hugodury/annotation-tool-package-2/releases/download/v8.0.0/{part}",
+      "urls_env_prefix": "CASCADE_V8_DOWNLOAD_URL_RERANKER_PART"
+    }
+  ]
+}

@@ -34,6 +34,16 @@ def ml_models_present(root: Path) -> bool:
     return all((root / rel).is_file() for rel in required)
 
 
+def cascade_v8_present(root: Path) -> bool:
+    required = [
+        "models/cascade_v8/config.json",
+        "models/cascade_v8/models/minilm_full_v7/model.safetensors",
+        "models/cascade_v8/models/deberta_large_v8.1/model.safetensors",
+        "models/cascade_v8/models/reranker_undetermined_v8/model.safetensors",
+    ]
+    return all((root / rel).is_file() for rel in required)
+
+
 def full_install_disk_gb(
     root: Path,
     cfg: dict | None = None,
@@ -49,7 +59,15 @@ def full_install_disk_gb(
     if archive_gb is None:
         size = manifest.get("archive", {}).get("size_bytes", 1_500_000_000)
         archive_gb = round(size / (1024**3) * 2 + 0.5, 1)
-    breakdown["modeles_ml"] = float(archive_gb)
+    breakdown["modeles_ml_v1"] = float(archive_gb)
+
+    v8_manifest_path = root / "models-v8.manifest.json"
+    if v8_manifest_path.is_file():
+        v8 = json.loads(v8_manifest_path.read_text(encoding="utf-8"))
+        breakdown["modeles_cascade_v8"] = float(v8.get("required_free_gb", 7.0))
+    else:
+        breakdown["modeles_cascade_v8"] = 7.0
+
     breakdown["venv_et_dependances"] = VENV_AND_DEPS_GB
 
     llm_profile = None

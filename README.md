@@ -62,18 +62,13 @@ Le script de démarrage installe le reste : venv, PyTorch (CPU / CUDA / MPS), mo
 
 ### Cascade V8 (MiniLM + DeBERTa Large + Reranker)
 
-Les poids V8 (~4 Go) **ne sont pas** dans ce dépôt Git. Ils vivent dans le workspace
-[`AI_annotation`](https://github.com/Cespriet/AI_annotation) sous
-`cascade_annotation_v8_complete/` (ou variable d'environnement `CASCADE_V8_ROOT`).
+Installée **automatiquement** au premier démarrage (Release `v8.0.0`), comme les modèles v1.
 
-Lien attendu par l'app :
+Pas de symlink machine-dépendante : le dossier `models/cascade_v8/` est créé sur chaque PC.
+Override éventuel : `CASCADE_V8_ROOT` (voir `.env.example`).
 
-```text
-annotation-tool-package-2/models/cascade_v8
-  → …/AI_annotation/cascade_annotation_v8_complete/cascade_annotation_v8_complete
-```
-
-Sans ce lien, le mode **Cascade V8 + Qwen** / **Compare** échoue au chargement des modèles.
+Sans Release / sans espace disque, les modes **Cascade V8 + Qwen** et **Compare** restent
+indisponibles ; **Qwen only** fonctionne dès que le LLM Ollama est prêt.
 
 ### Sélecteurs système (Browse / Choose JSON)
 
@@ -135,15 +130,42 @@ elles sont retentées au prochain Run Model.
 
 ---
 
-## Modèles ML (DeBERTa-base, SBERT, cross-encoder)
+## Modèles ML — Git exclus, Releases multi-OS
 
-Les poids fine-tunés (~1,5 Go) ne sont **pas** dans Git. Au premier lancement,
-`scripts/setup.py` les télécharge depuis la
-[Release GitHub v1.0.0](https://github.com/hugodury/annotation-tool-package-2/releases/tag/v1.0.0).
+Les poids **ne sont jamais dans Git** (`.gitignore` → `/models/`).  
+`./start.sh` / `start.ps1` / `start.bat` les téléchargent sur **Windows, macOS et Linux**.
+
+| Release | Tag | Contenu | Script |
+|---------|-----|---------|--------|
+| Base | [v1.0.0](https://github.com/hugodury/annotation-tool-package-2/releases/tag/v1.0.0) | DeBERTa-base, SBERT, cross-encoder (~1,5 Go) | `download_models.py` |
+| **Cascade V8** | [v8.0.0](https://github.com/hugodury/annotation-tool-package-2/releases/tag/v8.0.0) | MiniLM + DeBERTa Large + Reranker (~4 Go) | `download_models_v8.py` |
+
+Après install :
+
+```text
+models/
+├── fine_tuned_*                 # v1
+└── cascade_v8/                  # v8 — dossier réel (pas de symlink absolu)
+    ├── config.json
+    └── models/{minilm_full_v7,deberta_large_v8.1,reranker_undetermined_v8}/
+```
+
+Le Reranker dépasse la limite GitHub **2 Go/fichier** : il est découpé en `.part00`/`.part01`
+puis réassemblé automatiquement. Checksums : `models.manifest.json`, `models-v8.manifest.json`.
+
+Miroir custom : `MODELS_DOWNLOAD_URL` et `CASCADE_V8_DOWNLOAD_URL_*` (voir `.env.example`).
+
+**Mainteneur** — republier les poids :
 
 ```bash
-export MODELS_DOWNLOAD_URL=https://votre-hebergeur/vldbench-models-v1.tar.gz
+python scripts/package_models.py          # v1
+python scripts/package_models_v8.py       # v8 assets → dist/cascade-v8/
+python scripts/publish_models_v8.py       # gh release v8.0.0
 ```
+
+Détail multi-OS : **[DEPLOYMENT.md](DEPLOYMENT.md)**.
+
+Disque 1er lancement : **~20 Go libres** recommandés (venv + v1 + v8 + Qwen).
 
 ---
 

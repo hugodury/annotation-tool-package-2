@@ -79,7 +79,7 @@ def install_dependencies() -> None:
 
 
 def ensure_models(python_cmd: str | None = None) -> None:
-    print("Checking ML models (DeBERTa, SBERT, cross-encoder)...")
+    print("Checking ML models (DeBERTa-base, SBERT, cross-encoder + Cascade V8)...")
     py = python_cmd or str(venv_python())
     run([py, str(ROOT / "scripts" / "download_models.py")])
 

@@ -19,6 +19,8 @@ logs/
 /models/
 *.tar.gz
 vldbench-models-v1.tar.gz
+/dist/
+dist/
 
 # Local dumps / scratch
 /json

@@ -93,44 +93,63 @@ def download_models(force: bool = False) -> bool:
     manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
     if not force and models_complete(manifest):
         print("ML models already present and verified.")
-        return True
+        base_ok = True
+    else:
+        base_ok = False
+        require_disk_for_models(ROOT)
 
-    require_disk_for_models(ROOT)
-
-    archive_name = manifest.get("archive", {}).get("filename", "vldbench-models-v1.tar.gz")
-    urls = _resolve_urls(manifest)
-    if not urls:
-        print(
-            "No download URL configured. Set MODELS_DOWNLOAD_URL or publish a GitHub Release.\n"
-            "See DEPLOYMENT.md for maintainer instructions.",
-            file=sys.stderr,
-        )
-        return False
-
-    with tempfile.TemporaryDirectory() as tmp:
-        archive_path = Path(tmp) / archive_name
-        last_err: Exception | None = None
-        for url in urls:
-            try:
-                _download(url, archive_path)
-                last_err = None
-                break
-            except (urllib.error.URLError, OSError, RuntimeError) as e:
-                last_err = e
-                print(f"  Failed: {e}", file=sys.stderr)
-        if last_err is not None:
+        archive_name = manifest.get("archive", {}).get("filename", "vldbench-models-v1.tar.gz")
+        urls = _resolve_urls(manifest)
+        if not urls:
+            print(
+                "No download URL configured. Set MODELS_DOWNLOAD_URL or publish a GitHub Release.\n"
+                "See DEPLOYMENT.md for maintainer instructions.",
+                file=sys.stderr,
+            )
             return False
 
-        print("Extracting archive...")
-        with tarfile.open(archive_path, "r:gz") as tar:
-            tar.extractall(path=ROOT)
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_path = Path(tmp) / archive_name
+            last_err: Exception | None = None
+            for url in urls:
+                try:
+                    _download(url, archive_path)
+                    last_err = None
+                    break
+                except (urllib.error.URLError, OSError, RuntimeError) as e:
+                    last_err = e
+                    print(f"  Failed: {e}", file=sys.stderr)
+            if last_err is not None:
+                return False
 
-    if models_complete(manifest):
-        print("Models installed successfully.")
-        return True
+            print("Extracting archive...")
+            with tarfile.open(archive_path, "r:gz") as tar:
+                tar.extractall(path=ROOT)
 
-    print("Download finished but model verification failed.", file=sys.stderr)
-    return False
+        if models_complete(manifest):
+            print("Models installed successfully.")
+            base_ok = True
+        else:
+            print("Download finished but model verification failed.", file=sys.stderr)
+            return False
+
+    # Cascade V8 (MiniLM + DeBERTa Large + Reranker) — même flux Release multi-OS
+    try:
+        from download_models_v8 import download_v8_models
+    except ImportError:
+        sys.path.insert(0, str(ROOT / "scripts"))
+        from download_models_v8 import download_v8_models  # type: ignore
+
+    v8_ok = download_v8_models(force=force)
+    if not v8_ok:
+        print(
+            "Avertissement: modèles Cascade V8 non installés — "
+            "les modes « Cascade V8 + Qwen » / Compare seront indisponibles.\n"
+            "Relancer: python scripts/download_models_v8.py\n"
+            "Doc: DEPLOYMENT.md (release v8.0.0).",
+            file=sys.stderr,
+        )
+    return base_ok and v8_ok
 
 
 def main() -> int:

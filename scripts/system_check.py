@@ -102,6 +102,11 @@ def ml_models_ok(root: Path) -> bool:
         "models/fine_tuned_deberta_base_expanded/model.safetensors",
         "models/fine_tuned_sbert/model.safetensors",
         "models/fine_tuned_cross_encoder/model.safetensors",
+        # Cascade V8 (multi-OS Release v8.0.0)
+        "models/cascade_v8/config.json",
+        "models/cascade_v8/models/minilm_full_v7/model.safetensors",
+        "models/cascade_v8/models/deberta_large_v8.1/model.safetensors",
+        "models/cascade_v8/models/reranker_undetermined_v8/model.safetensors",
     ]
     return all((root / p).is_file() for p in required)
 
@@ -240,7 +245,7 @@ def build_checklist(
         },
         {
             "id": "ml_models",
-            "label": "ML models (DeBERTa, SBERT, cross-encoder)",
+            "label": "ML models (DeBERTa-base, SBERT, cross-encoder, Cascade V8)",
             "ok": models_ok,
             "required": True,
             "detail": "Present in models/" if models_ok else "Missing",
@@ -380,7 +385,8 @@ def build_report(root: Path | None = None, cfg: dict | None = None) -> dict[str,
             )
         if not models_ok:
             warnings.append(
-                "ML models missing in models/ (DeBERTa / SBERT / cross-encoder). "
+                "ML models missing in models/ (DeBERTa-base / SBERT / cross-encoder / Cascade V8). "
+                "Run ./start.sh (downloads Releases v1.0.0 + v8.0.0) or see DEPLOYMENT.md."
                 "Re-run ./start.sh to download them."
             )
         if ollama["installed"] and ollama["running"] and rec_llm and not llm_ok:
