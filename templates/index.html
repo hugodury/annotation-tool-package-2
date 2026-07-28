@@ -695,6 +695,7 @@
                             <li><strong>Annotate — Qwen only</strong> — every target through Qwen P3 + post-LLM (no Duo / Reranker).</li>
                             <li><strong>Annotate — Cascade (incl. Qwen)</strong> — Duo Zero Faute (MiniLM + DeBERTa Large) → Reranker undetermined (≥0.70) → else <em>Qwen P3 + post-LLM</em>. Qwen is the last stage of the cascade. Thresholds in <code>models/cascade_v8/config.json</code>.</li>
                             <li><strong>Compare — Qwen ↔ Cascade (incl. Qwen)</strong> — runs those two pipelines only; same label → auto-annotate; mismatch → needs review with side-by-side detail.</li>
+                            <li><strong>Time estimate</strong>: shown only after a first completed Run Model <em>in the same mode</em> (Qwen only and Cascade are calibrated separately). No theoretical guess on a cold start.</li>
                             <li><strong>Run Model</strong> resumes at the first incomplete reference and skips finished targets — unless you choose to overwrite.</li>
                             <li><strong>Re-annotate</strong>: if the range is partially or fully annotated, a confirmation asks whether to overwrite.</li>
                             <li><strong>Disagreements</strong> (<code>human</code> / <code>rejected</code> / <code>compare_disagree</code>) are not final — retried on the next run.</li>
@@ -1275,7 +1276,8 @@
                     return;
                 }
                 if (!est.estimate_available || !est.estimated_label) {
-                    hint.textContent = '';
+                    hint.textContent = est.estimate_hint
+                        || 'No time estimate yet — finish a first Run Model with this mode to calibrate.';
                     hint.className = 'run-estimate-hint';
                     return;
                 }
@@ -1389,9 +1391,12 @@
             const requiredOk = items.filter(i => i.required).every(i => i.ok === true);
             const installDone = report.install_complete === true || requiredOk;
 
-            if (freshGb) {
+            if (!installDone && freshGb) {
                 installNote.textContent =
                     `Full install (first run): ~${freshGb} GB free recommended (venv + GitHub Releases v1 + Cascade V8 + Qwen).`;
+            } else if (installDone && hw.disk_free_gb != null) {
+                installNote.textContent =
+                    `Install complete — ${hw.disk_free_gb} GB free on disk (the ~${freshGb || 20} GB figure only applies to a fresh PC).`;
             } else {
                 installNote.textContent = '';
             }
@@ -1420,12 +1425,12 @@
                 const req = item.required ? '' : ' <span class="text-muted">(recommended)</span>';
                 let detail = item.detail || '';
                 if (item.id === 'disk' && hw.disk_free_gb != null) {
-                    if (installDone && freshGb) {
-                        detail = `${hw.disk_free_gb} GB free (need ~${freshGb} GB on first install)`;
-                    } else if (installDone) {
-                        detail = `${hw.disk_free_gb} GB free`;
+                    if (installDone) {
+                        detail = `${hw.disk_free_gb} GB free — install complete`;
                     } else if (freshGb) {
-                        detail = `${hw.disk_free_gb} GB free / ~${freshGb} GB required`;
+                        detail = `${hw.disk_free_gb} GB free / ~${freshGb} GB required for first install`;
+                    } else {
+                        detail = `${hw.disk_free_gb} GB free`;
                     }
                 }
                 return `<li class="${cls}">
@@ -2137,10 +2142,11 @@
                 if (estimate) {
                     if (stats.estimate_available && stats.estimated_label) {
                         estimate.style.display = '';
-                        estimate.textContent = `Durée estimée : ~${stats.estimated_label}${stats.is_cpu ? ' (CPU lent)' : ''}.`;
+                        estimate.textContent = `Estimated duration: ~${stats.estimated_label}${stats.is_cpu ? ' (CPU slow)' : ''}.`;
                     } else {
-                        estimate.style.display = 'none';
-                        estimate.textContent = '';
+                        estimate.style.display = '';
+                        estimate.textContent = stats.estimate_hint
+                            || 'No estimate yet — finish a first run with this mode to calibrate.';
                     }
                 }
                 if (resumeBtn) resumeBtn.style.display = allDone ? 'none' : '';

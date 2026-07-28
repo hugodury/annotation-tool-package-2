@@ -263,7 +263,7 @@ def build_checklist(
             "ok": models_base_ok,
             "required": True,
             "detail": (
-                "DeBERTa-base + SBERT + cross-encoder"
+                "SBERT (+ DeBERTa-base / cross-encoder package) — similarity + Release v1"
                 if models_base_ok
                 else "Missing — run ./start.sh (downloads GitHub Release v1.0.0)"
             ),
@@ -275,7 +275,7 @@ def build_checklist(
             "ok": models_v8_ok,
             "required": True,
             "detail": (
-                "MiniLM + DeBERTa Large + Reranker (+ Qwen via Ollama) — Cascade V8 + Compare"
+                "MiniLM + DeBERTa Large + Reranker — Annotate Cascade & Compare (Qwen = last stage via Ollama)"
                 if models_v8_ok
                 else "Missing — run ./start.sh (downloads GitHub Release v8.0.0); Qwen still required via Ollama"
             ),
@@ -303,9 +303,9 @@ def build_checklist(
             "ok": llm_ok,
             "required": True,
             "detail": (
-                "Downloaded — final fallback for Cascade V8 / Compare, and full pipeline for Qwen only"
+                "Downloaded — used by Qwen only, Cascade (last stage), and Compare"
                 if llm_ok
-                else "Pending or missing — required by Cascade V8 (last stage) and Qwen only"
+                else "Pending or missing — required by all three Run Model modes"
             ),
             "action": f"ollama pull {llm_tag}" if not llm_ok else None,
         },
@@ -322,9 +322,13 @@ def build_checklist(
             "ok": True if install_done else (disk_ok if fresh_gb else None),
             "required": False,
             "detail": (
-                f"{disk_free} GB free"
-                if disk_free is not None
-                else ""
+                f"{disk_free} GB free — install complete"
+                if install_done and disk_free is not None
+                else (
+                    f"{disk_free} GB free"
+                    if disk_free is not None
+                    else ""
+                )
             ),
             "action": (
                 None

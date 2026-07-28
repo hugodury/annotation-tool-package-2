@@ -165,9 +165,21 @@ _TARGET_DONE = re.compile(
     r"TARGET DONE ref_index=\d+ ref=\d+/\d+ target=\d+/\d+ route=(\w+) duration=([\d.]+)s"
 )
 _BATCH_START_FILE = re.compile(r"BATCH START file=(.+?) indices=")
+_BATCH_START_MODE = re.compile(
+    r"BATCH START file=(.+?) indices=.*?cascade_mode=(\w+)"
+)
 LLM_ROUTES = ("llm_auto", "consensus", "v8_qwen", "human", "rejected")
 DEBERTA_ROUTES = ("deberta_auto", "deberta_ambiguous", "v8_duo", "v8_reranker")
 ESTIMATE_SAMPLE_MAX = 100
+ESTIMATE_MIN_SAMPLES = 1
+ESTIMATE_HINT_FIRST_RUN = (
+    "No time estimate yet — finish a first Run Model with this mode "
+    "(Qwen only or Cascade) so timings can be calibrated from a real sample."
+)
+ESTIMATE_HINT_COMPARE = (
+    "Compare has no single-time estimate (runs Qwen only + Cascade). "
+    "Estimate each mode separately after a first calibrated run."
+)
 CALIBRATION_VERSION = 2
 TPR_BUCKETS = (1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30, 40, 50, 75, 100)
 REFS_BUCKETS = (10, 25, 50, 100, 200, 300, 500, 750, 1000, 1500, 2000, 3000, 5000)
@@ -373,8 +385,15 @@ def refresh_estimate_calibration(
     targets_processed: int = 0,
     cpu_slow: dict | None = None,
     est_cfg: dict | None = None,
+    cascade_mode: str = "qwen_only",
 ) -> None:
     if not base_dir or not logs_dir or not filename:
+        return
+    from cascade.core import CASCADE_MODE_COMPARE, normalize_cascade_mode
+
+    mode = normalize_cascade_mode(cascade_mode)
+    if mode == CASCADE_MODE_COMPARE:
+        # Compare = deux pipelines ; on ne calibrait pas un temps unique.
         return
     session = logs_dir / SESSION_LOG_FILENAME
     route_buckets, startup_delays = _parse_session_log_stats(session, filename=filename)
@@ -383,7 +402,7 @@ def refresh_estimate_calibration(
 
     store = _load_calibration_store(base_dir, device_type)
     profile_key = file_profile.get("profile_key", "")
-    device_global = store.setdefault("device_global", {"startup_sec": None, "routes": {}})
+    device_global = store.setdefault("device_global", {"startup_sec": None, "routes": {}, "by_mode": {}})
     by_file = store.setdefault("by_file", {})
     by_profile = store.setdefault("by_profile", {})
 
@@ -479,7 +498,42 @@ def refresh_estimate_calibration(
         if profile_key:
             by_profile[profile_key] = profile_entry
 
+    # Calibration par mode (Qwen only vs Cascade) — obligatoire pour estimer.
+    for layer in (file_entry, profile_entry, device_global):
+        by_mode = dict(layer.get("by_mode") or {})
+        slot = dict(by_mode.get(mode) or {})
+        slot["n_batches"] = int(slot.get("n_batches", 0)) + 1
+        if snapshot["sample_size"] > 0:
+            slot["two_bucket"] = _merge_two_bucket(slot.get("two_bucket"), snapshot)
+            slot["sample_size"] = int((slot.get("two_bucket") or {}).get("sample_size", 0))
+        if routing_stats:
+            total_routes = sum(int(routing_stats.get(r, 0)) for r in KNOWN_ROUTES)
+            if total_routes > 0:
+                slot["route_fractions"] = _normalize_fractions(
+                    {r: float(routing_stats.get(r, 0)) for r in KNOWN_ROUTES}
+                )
+                slot["llm_fraction_observed"] = round(
+                    _llm_fraction(slot["route_fractions"]), 4
+                )
+        if file_entry.get("sec_per_target") is not None and layer is file_entry:
+            slot["sec_per_target"] = file_entry.get("sec_per_target")
+        by_mode[mode] = slot
+        layer["by_mode"] = by_mode
+
+    by_file[filename] = file_entry
+    if profile_key:
+        by_profile[profile_key] = profile_entry
+    store["device_global"] = device_global
+
     _save_calibration_store(base_dir, store)
+
+
+def _mode_calibration_slot(
+    parent: dict[str, Any] | None, cascade_mode: str
+) -> dict[str, Any]:
+    if not parent:
+        return {}
+    return dict((parent.get("by_mode") or {}).get(cascade_mode) or {})
 
 
 def _has_recorded_estimate_timing(
@@ -488,27 +542,63 @@ def _has_recorded_estimate_timing(
     file_cal: dict[str, Any] | None,
     logs_dir: Path | None,
     filename: str | None,
+    cascade_mode: str = "qwen_only",
 ) -> bool:
-    """True si un Run Model a deja ete chronometre et persiste.
+    """True seulement si ce mode a déjà un échantillon chronométré.
 
-    Un redemarrage Flask efface le log de session, mais PAS
-    instance/estimate_calibration.json : si la machine ou le fichier a deja
-    des timings enregistres, l'estimation reste disponible.
+    Premier run d'un mode → pas d'estimation théorique.
+    Après un run Qwen only → estimation Qwen only.
+    Après un run Cascade → estimation Cascade (indépendant).
     """
-    file_tb = (file_cal or {}).get("two_bucket") or {}
-    if int(file_tb.get("sample_size", 0)) >= 1:
-        return True
-    if file_cal and int(file_cal.get("n_batches", 0)) >= 1:
-        return True
-    # Timings machine persistants (survivent au redemarrage serveur)
-    routes = (device_cal or {}).get("routes") or {}
-    for route_name in LLM_ROUTES:
-        if int((routes.get(route_name) or {}).get("n", 0)) >= 1:
+    from cascade.core import CASCADE_MODE_COMPARE, normalize_cascade_mode
+
+    mode = normalize_cascade_mode(cascade_mode)
+    if mode == CASCADE_MODE_COMPARE:
+        return False
+
+    for parent in (file_cal, device_cal):
+        slot = _mode_calibration_slot(parent, mode)
+        tb = slot.get("two_bucket") or {}
+        if int(tb.get("sample_size", 0)) >= ESTIMATE_MIN_SAMPLES:
             return True
-    # Sinon : lot en cours dans la session courante uniquement
-    if _session_has_prior_targets(logs_dir, filename):
-        return True
-    return _session_has_prior_targets(logs_dir, None)
+        if int(slot.get("sample_size", 0)) >= ESTIMATE_MIN_SAMPLES:
+            return True
+        if int(slot.get("n_batches", 0)) >= 1:
+            return True
+
+    return _session_has_mode_prior(logs_dir, filename, mode)
+
+
+def _session_has_mode_prior(
+    logs_dir: Path | None, filename: str | None, cascade_mode: str
+) -> bool:
+    """True si la session courante a déjà chronométré ce mode (même après reboot partiel)."""
+    if not logs_dir:
+        return False
+    session = logs_dir / SESSION_LOG_FILENAME
+    if not session.is_file():
+        return False
+    try:
+        text = session.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+    found_mode_batch = False
+    for match in _BATCH_START_MODE.finditer(text):
+        file_name = match.group(1).strip()
+        mode = match.group(2).strip().lower()
+        if mode != cascade_mode:
+            continue
+        if filename and file_name != filename:
+            continue
+        found_mode_batch = True
+        break
+    if not found_mode_batch:
+        return False
+    # Au moins une cible terminée dans la session pour ce fichier / mode
+    if filename:
+        route_buckets, _ = _parse_session_log_stats(session, filename=filename)
+        return any(route_buckets.values())
+    return "TARGET DONE" in text
 
 
 def _session_has_prior_targets(logs_dir: Path | None, filename: str | None = None) -> bool:
@@ -896,19 +986,34 @@ def _resolve_two_bucket_estimate(
     sample_size = 0
     tier = "theorique"
 
-    file_tb = (file_cal or {}).get("two_bucket")
-    legacy_tb = _two_bucket_from_file_batches(
-        file_cal or {},
-        device_routes=device_routes,
-        device_type=device_type,
-        cpu_slow=cpu_slow,
-        est_cfg=est_cfg,
-    )
+    # Prefer timings recorded for this exact mode (Qwen only vs Cascade).
+    mode_file = _mode_calibration_slot(file_cal, mode)
+    mode_device = _mode_calibration_slot(device_cal, mode)
+    mode_profile = _mode_calibration_slot(profile_cal, mode)
+    file_tb = mode_file.get("two_bucket") or None
+    if not file_tb:
+        file_tb = mode_device.get("two_bucket") or mode_profile.get("two_bucket")
+    legacy_tb = None
+    if not file_tb:
+        # Ancienne calibration sans by_mode : ne pas l'utiliser pour estimer
+        # (sinon un run Qwen débloquerait Cascade). On garde le fallback
+        # theorique uniquement pour le calcul interne ; estimate_available
+        # reste False sans by_mode.
+        legacy_tb = _two_bucket_from_file_batches(
+            file_cal or {},
+            device_routes=device_routes,
+            device_type=device_type,
+            cpu_slow=cpu_slow,
+            est_cfg=est_cfg,
+        )
 
     file_tb_usable = (
         file_tb
-        and int(file_tb.get("sample_size", 0)) >= 10
-        and float(file_tb.get("llm_fraction", 0)) >= 0.02
+        and int(file_tb.get("sample_size", 0)) >= ESTIMATE_MIN_SAMPLES
+        and (
+            mode != CASCADE_MODE_V8_QWEN
+            or float(file_tb.get("llm_fraction", 0)) >= 0.0
+        )
     )
 
     if file_tb_usable:
@@ -1425,17 +1530,20 @@ def estimate_batch(
         warning = (warning + " " if warning else "") + (
             "All targets in this range are already annotated."
         )
-    # Pas d'estimation theorique a l'ecran : on attend qu'au moins un Run Model
-    # ait enregistre des timings reels (calibration / logs), puis on propose.
-    estimate_available = (
-        mode != CASCADE_MODE_COMPARE
-        and _has_recorded_estimate_timing(
-            device_cal=device_cal,
-            file_cal=file_cal,
-            logs_dir=logs_dir,
-            filename=filename,
-        )
+    # Pas d'estimation theorique : il faut un premier run chronometre de CE mode.
+    estimate_available = _has_recorded_estimate_timing(
+        device_cal=device_cal,
+        file_cal=file_cal,
+        logs_dir=logs_dir,
+        filename=filename,
+        cascade_mode=mode,
     )
+    if mode == CASCADE_MODE_COMPARE:
+        estimate_hint = ESTIMATE_HINT_COMPARE
+    elif not estimate_available:
+        estimate_hint = ESTIMATE_HINT_FIRST_RUN
+    else:
+        estimate_hint = None
 
     route_fractions_pct = {r: round(frac_display.get(r, 0) * 100, 1) for r in KNOWN_ROUTES}
     route_seconds = {r: round(sec_per_route[r], 2) for r in KNOWN_ROUTES}
@@ -1447,6 +1555,7 @@ def estimate_batch(
         "targets": n_targets,
         "targets_remaining": n_remaining,
         "estimate_available": estimate_available,
+        "estimate_hint": estimate_hint,
         "estimated_seconds": round(total_sec) if estimate_available else None,
         "estimated_label": _format_elapsed(total_sec) if estimate_available else None,
         "sec_per_target": round(sec_per, 2) if estimate_available else None,
@@ -1461,21 +1570,23 @@ def estimate_batch(
         "estimate_deberta_calls": bucket["n_deberta"] if estimate_available else None,
         "sec_deberta": bucket["sec_deberta"] if estimate_available else None,
         "sec_llm": bucket["sec_llm"] if estimate_available else None,
-        "estimate_sample_size": bucket["sample_size"],
-        "calibration_tier": calibration_tier,
+        "estimate_sample_size": (
+            bucket["sample_size"] if estimate_available else 0
+        ),
+        "calibration_tier": calibration_tier if estimate_available else None,
         "file_profile": file_profile,
         "filename": filename,
-        "route_fractions_pct": route_fractions_pct,
-        "route_seconds": route_seconds,
-        "fraction_source": frac_source,
+        "route_fractions_pct": route_fractions_pct if estimate_available else {},
+        "route_seconds": route_seconds if estimate_available else {},
+        "fraction_source": frac_source if estimate_available else None,
         "model_load_seconds": round(model_load) if estimate_available else None,
         "model_load_source": load_source if estimate_available else None,
         "is_cpu": is_cpu,
         "device_type": device,
         "device_label": hw,
         "models_warm": warm,
-        "llm_fraction_pct": llm_fraction,
-        "deberta_fraction_pct": deberta_fraction,
+        "llm_fraction_pct": llm_fraction if estimate_available else None,
+        "deberta_fraction_pct": deberta_fraction if estimate_available else None,
         "max_refs_suggested": max_refs,
         "warning": warning,
         "has_existing_annotations": range_stats["has_existing_annotations"],
@@ -2426,6 +2537,7 @@ def _run_batch_inner(
             targets_processed=targets_annotated_count,
             cpu_slow=cpu_slow,
             est_cfg=run_cfg.get("estimate") or {},
+            cascade_mode=mode,
         )
         _session_models_warm = True
         _finish(
