@@ -1394,7 +1394,7 @@
 
             if (!installDone && freshGb) {
                 installNote.textContent =
-                    `Full install (first run): ~${freshGb} GB free recommended (venv + GitHub Releases v1 + Cascade V8 + Qwen).`;
+                    `Full install (first run): ~${freshGb} GB free recommended (venv + Cascade V8 + Qwen).`;
             } else if (installDone && hw.disk_free_gb != null) {
                 installNote.textContent =
                     `Install complete — ${hw.disk_free_gb} GB free on disk (the ~${freshGb || 20} GB figure only applies to a fresh PC).`;

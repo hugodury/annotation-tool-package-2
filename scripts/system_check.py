@@ -18,6 +18,9 @@ OLLAMA_DOWNLOAD = "https://ollama.com/download"
 PYTHON_DOWNLOAD = "https://www.python.org/downloads/"
 PYTHON_MIN = (3, 9)
 PYTHON_RECOMMENDED = (3, 12)
+# Qwen 7B alone ≈ 10 GB. Cascade (Duo+Reranker in RAM) + Qwen → prefer ≥16 GB.
+RAM_QWEN_MIN_GB = 10.0
+RAM_CASCADE_RECOMMENDED_GB = 16.0
 
 
 def _disk_free_gb(path: Path) -> float:
@@ -119,8 +122,8 @@ def cascade_v8_models_ok(root: Path) -> bool:
 
 
 def ml_models_ok(root: Path) -> bool:
-    """Tous les poids requis pour les pipelines (base + Cascade V8)."""
-    return ml_models_base_ok(root) and cascade_v8_models_ok(root)
+    """Poids requis pour les pipelines actuels (Cascade V8 ; v1 optionnel)."""
+    return cascade_v8_models_ok(root)
 
 
 def recommended_llm(ram: float, profiles: list[dict]) -> dict | None:
@@ -206,10 +209,29 @@ def build_checklist(
     ram_ok: bool | None
     if mem <= 0:
         ram_ok = None
-    elif mem >= 10:
+    elif mem >= RAM_CASCADE_RECOMMENDED_GB:
         ram_ok = True
+    elif mem >= RAM_QWEN_MIN_GB:
+        ram_ok = None  # OK for Qwen only; tight for Cascade + Qwen
     else:
         ram_ok = False
+
+    if mem <= 0:
+        ram_detail = "Not detected"
+    else:
+        ram_detail = (
+            f"{mem:.1f} GB total — Cascade OK (≥{RAM_CASCADE_RECOMMENDED_GB:.0f} GB)"
+            if mem >= RAM_CASCADE_RECOMMENDED_GB
+            else (
+                f"{mem:.1f} GB total — Cascade prefers ≥{RAM_CASCADE_RECOMMENDED_GB:.0f} GB "
+                f"(Qwen only OK from ≥{RAM_QWEN_MIN_GB:.0f} GB)"
+                if mem >= RAM_QWEN_MIN_GB
+                else (
+                    f"{mem:.1f} GB total — below Qwen minimum "
+                    f"(≥{RAM_QWEN_MIN_GB:.0f} GB; Cascade ≥{RAM_CASCADE_RECOMMENDED_GB:.0f} GB)"
+                )
+            )
+        )
 
     pt_ok, pt_ver = deps.get("pytorch", (False, "?"))
     st_ok, st_ver = deps.get("sentence_transformers", (False, "?"))
@@ -258,18 +280,6 @@ def build_checklist(
             "action": "pip install 'sentence-transformers>=5.5.1'" if not st_ok else None,
         },
         {
-            "id": "ml_models_base",
-            "label": "ML models base (Release v1)",
-            "ok": models_base_ok,
-            "required": True,
-            "detail": (
-                "SBERT (+ DeBERTa-base / cross-encoder package) — similarity + Release v1"
-                if models_base_ok
-                else "Missing — run ./start.sh (downloads GitHub Release v1.0.0)"
-            ),
-            "action": "./start.sh" if not models_base_ok else None,
-        },
-        {
             "id": "ml_models_v8",
             "label": "Cascade V8 models (Release v8)",
             "ok": models_v8_ok,
@@ -311,10 +321,10 @@ def build_checklist(
         },
         {
             "id": "ram",
-            "label": "RAM >= 10 GB",
+            "label": f"RAM ≥ {RAM_CASCADE_RECOMMENDED_GB:.0f} GB (Cascade)",
             "ok": ram_ok,
             "required": False,
-            "detail": f"{mem:.1f} GB" if mem > 0 else "Not detected",
+            "detail": ram_detail,
         },
         {
             "id": "disk",
@@ -334,7 +344,7 @@ def build_checklist(
                 None
                 if install_done
                 else (
-                    f"~{fresh_gb} GB free required (venv + Releases v1+v8 + Qwen)"
+                    f"~{fresh_gb} GB free required (venv + Cascade V8 + Qwen)"
                     if fresh_gb and not disk_ok
                     else None
                 )
@@ -422,11 +432,6 @@ def build_report(root: Path | None = None, cfg: dict | None = None) -> dict[str,
             warnings.append(
                 "Ollama is installed but the service is not responding yet. "
                 "Auto-start in progress (ollama serve)…"
-            )
-        if not models_base_ok:
-            warnings.append(
-                "Base ML models missing (DeBERTa-base / SBERT / cross-encoder). "
-                "Run ./start.sh to download GitHub Release v1.0.0."
             )
         if not models_v8_ok:
             warnings.append(

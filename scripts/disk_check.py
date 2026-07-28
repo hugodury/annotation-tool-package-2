@@ -52,15 +52,9 @@ def full_install_disk_gb(
 ) -> tuple[float, dict[str, float]]:
     """Espace libre recommande pour une installation complete depuis zero (informatif)."""
     cfg = cfg or {}
-    manifest = load_manifest(root)
     breakdown: dict[str, float] = {}
 
-    archive_gb = manifest.get("archive", {}).get("required_free_gb")
-    if archive_gb is None:
-        size = manifest.get("archive", {}).get("size_bytes", 1_500_000_000)
-        archive_gb = round(size / (1024**3) * 2 + 0.5, 1)
-    breakdown["modeles_ml_v1"] = float(archive_gb)
-
+    # Release v1 (DeBERTa-base / SBERT) is unused by current Run Model modes — not counted.
     v8_manifest_path = root / "models-v8.manifest.json"
     if v8_manifest_path.is_file():
         v8 = json.loads(v8_manifest_path.read_text(encoding="utf-8"))

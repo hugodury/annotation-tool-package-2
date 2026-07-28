@@ -13,7 +13,6 @@ Interface web **entièrement en anglais**. Compatible **Windows, macOS et Linux*
 | Ressource | Lien |
 |-----------|------|
 | **Dépôt GitHub** | https://github.com/hugodury/annotation-tool-package-2 |
-| **Release modèles base (v1.0.0)** | https://github.com/hugodury/annotation-tool-package-2/releases/tag/v1.0.0 |
 | **Release Cascade V8 (v8.0.0)** | https://github.com/hugodury/annotation-tool-package-2/releases/tag/v8.0.0 |
 | **Workspace modèles / cascade CLI** | https://github.com/Cespriet/AI_annotation |
 | **Déploiement multi-OS** | [DEPLOYMENT.md](DEPLOYMENT.md) |
@@ -24,10 +23,10 @@ cd annotation-tool-package-2
 ```
 
 > **PC neuf / clone GitHub** : une seule commande de démarrage (ci-dessous).
-> Elle crée le venv, installe PyTorch + deps, télécharge les Releases **v1 + v8**, démarre Ollama et tire Qwen.
+> Elle crée le venv, installe PyTorch + deps, télécharge **Cascade V8**, démarre Ollama et tire Qwen.
 > **1er lancement** : 15–45 min (réseau / machine). Internet requis **une seule fois**.
-> Les poids ML **ne sont pas dans Git** (~6 Go) — Releases GitHub automatiques.
-> Après install, **~5–6 Go libres** sur le disque suffisent : le message « ~20 Go » ne s’applique qu’au **premier** install.
+> Les poids ML **ne sont pas dans Git** — Release GitHub `v8.0.0` automatique.
+> L’ancienne Release **v1** (DeBERTa-base / SBERT) n’est **plus utilisée** par Run Model.
 
 ---
 
@@ -54,12 +53,12 @@ Puis ouvrir **http://127.0.0.1:5000**
 |---------|--------|
 | Python | 3.9+ (3.12+ recommandé) — [python.org](https://www.python.org/downloads/) |
 | Ollama | [ollama.com](https://ollama.com/) |
-| RAM | **≥ 10 Go** recommandés (Qwen 7B) ; 16 Go confortable avec Cascade |
-| Disque (1er lancement) | **~20 Go libres** (venv + v1 ~1,5 Go + v8 ~4 Go + Qwen ~4 Go + marge) |
-| Disque (déjà installé) | **~12–14 Go** utilisés ; l’espace libre restant peut être faible (normal) |
-| GPU | Optionnel (accélération). Cascade DeBERTa Large tourne en **CPU** (stabilité) |
+| RAM | **≥ 16 Go** recommandés pour **Cascade + Qwen** (non bloquant) ; ≥ **10 Go** minimum pour Qwen only |
+| Disque (1er lancement) | **~15 Go libres** (venv + Cascade V8 ~4–7 Go + Qwen ~4 Go + marge) |
+| Disque (déjà installé) | espace libre restant peut être faible (normal) |
+| GPU | Optionnel. DeBERTa Large (Cascade) tourne en **CPU** (stabilité) |
 
-Le script installe : venv, PyTorch (CPU / CUDA / MPS), modèles ML (v1+v8), pull Qwen.
+Le script installe : venv, PyTorch (CPU / CUDA / MPS), modèles Cascade V8, pull Qwen.
 
 ---
 
@@ -70,15 +69,15 @@ Au chargement (`/api/system-check`) :
 | Item | Requis | Rôle |
 |------|--------|------|
 | System / Python / PyTorch / sentence-transformers ≥ 5.5 | oui | Runtime |
-| **ML models base (Release v1)** | oui | SBERT (similarité) + package base |
 | **Cascade V8 models (Release v8)** | oui | Duo + Reranker pour Cascade / Compare |
 | Ollama installé + running | oui | Serveur LLM |
 | **LLM qwen2.5:7b-instruct** | oui | Qwen only + dernier étage Cascade + Compare |
-| RAM ≥ 10 Go | non | Recommandé |
+| RAM ≥ 16 Go (Cascade) | **non** | Recommandé seulement — n’empêche pas Run Model |
 | Disk space | non | Info ; « install complete » si déjà installé |
 | GPU / Estimated performance | non | Info (CPU → Slow) |
 
-**Run Model** n’est actif que si tous les items **requis** sont ✓ (**All set**).
+**Run Model** est actif dès que tous les items **requis** sont ✓ (**All set**).  
+La RAM ○ / ✓ est purement informative.
 
 ---
 
@@ -108,11 +107,21 @@ Pair (T_ref, T_n)
 ```
 
 **Qwen fait partie de la cascade** (dernier étage). Seuils dans `models/cascade_v8/config.json`.
-Règles écrites : [`cascade/CASCADE_RULES.md`](cascade/CASCADE_RULES.md).
+Règles : [`cascade/CASCADE_RULES.md`](cascade/CASCADE_RULES.md).
+
+**Qui a annoté ?** Chaque cible affiche un badge clair :
+
+| Badge UI | Route / champ | Décideur |
+|----------|---------------|----------|
+| **By: Duo** | `v8_duo` / `annotated_by: duo` | MiniLM + DeBERTa Large |
+| **By: Reranker** | `v8_reranker` / `annotated_by: reranker` | Reranker undetermined |
+| **By: Qwen (Cascade)** | `v8_qwen` / `annotated_by: qwen` | Fallback LLM |
+
+Détail stage / règle / MiniLM / DeBERTa dans l’UI + JSON (`cascade_v8`, `annotated_by_label`).
 
 ### 3. Compare — Qwen ↔ Cascade (`compare`)
 
-Lance **uniquement** ces deux pipelines (pas d’ancien DeBERTa-base) :
+Lance **uniquement** ces deux pipelines :
 
 | Résultat | Route | Action |
 |----------|-------|--------|
@@ -127,22 +136,21 @@ Routes **non finales** (retentées au prochain run) : `human`, `rejected`, `comp
 
 | Situation | Affichage |
 |-----------|-----------|
-| **Premier run** d’un mode (Qwen only *ou* Cascade) | Pas d’estimation théorique — message *finish a first Run Model with this mode…* |
-| Après un run **Qwen only** | Estimation pour **Qwen only** (échantillon calibré) |
+| **Premier run** d’un mode | Pas d’estimation théorique — *finish a first Run Model with this mode…* |
+| Après un run **Qwen only** | Estimation pour **Qwen only** |
 | Après un run **Cascade** | Estimation pour **Cascade** (calibrage **séparé**) |
-| **Compare** | Pas d’estimation unique (2 pipelines) |
+| **Compare** | Pas d’estimation unique |
 
-Calibration persistée dans `instance/estimate_calibration.json` (par mode, fichier, machine).
-Survit aux redémarrages Flask.
+Calibration : `instance/estimate_calibration.json` (par mode). Survit aux redémarrages Flask.
 
 ---
 
 ## Storage folder & fichiers
 
 - **Storage folder** (Browse) : dossier des JSON annotés (défaut `uploads/`, ou Bureau, etc.).
-- Fichier ouvert ailleurs (**Choose JSON** / session hors storage) → **copié** dans le storage avant annotation.
-- **Browse** / **Choose JSON** : sélecteur natif (zenity / Finder / PowerShell + repli tkinter).
-- Verrouillage possible : `ANNOTATION_DATA_DIR` dans `.env`.
+- Fichier ouvert ailleurs → **copié** dans le storage avant annotation.
+- Sélecteurs natifs OS (zenity / Finder / PowerShell + tkinter).
+- Verrouillage : `ANNOTATION_DATA_DIR` dans `.env`.
 
 ---
 
@@ -151,46 +159,42 @@ Survit aux redémarrages Flask.
 1. Checklist **All set**
 2. Choisir le **Storage folder**
 3. Charger un corpus (**Choose JSON** / Saved sessions)
-4. **Run Model** : indices **0-based** (positions JSON, pas numéros de batch) + mode
-5. Reprise automatique au premier référence incomplet ; cibles déjà faites **sautées** (sauf overwrite)
-6. Si la plage est déjà annotée → modal de confirmation (reprendre / tout réannoter)
-7. Revue manuelle : filtres, **Next review**, Save & next / Dismiss
+4. **Run Model** : indices **0-based** + mode
+5. Reprise au premier référence incomplet ; cibles faites sautées (sauf overwrite)
+6. Plage déjà annotée → modal (reprendre / tout réannoter)
+7. Revue : filtres, **Next review**, Save & next / Dismiss — badges **By: Duo / Reranker / Qwen**
 
-Protocole LLM : `cascade/protocol.md` · Few-shot : `cascade/few_shot.json` · Post-LLM : `cascade/post_llm_regles.txt`
+Protocole : `cascade/protocol.md` · Few-shot : `cascade/few_shot.json` · Post-LLM : `cascade/post_llm_regles.txt`
 
 ---
 
 ## Modèles ML — Releases multi-OS (hors Git)
 
 `.gitignore` → `/models/`.  
-`./start.sh` appelle `scripts/download_models.py` → **v1 puis v8**.
+Run Model actuel nécessite **uniquement Cascade V8** (+ Qwen via Ollama).
 
-| Release | Tag | Contenu | Script |
-|---------|-----|---------|--------|
-| Base | [v1.0.0](https://github.com/hugodury/annotation-tool-package-2/releases/tag/v1.0.0) | DeBERTa-base, SBERT, cross-encoder (~1,5 Go) | `download_models.py` |
-| **Cascade V8** | [v8.0.0](https://github.com/hugodury/annotation-tool-package-2/releases/tag/v8.0.0) | MiniLM + DeBERTa Large + Reranker (~4 Go) | `download_models_v8.py` |
+| Release | Tag | Contenu | Requis Run Model ? |
+|---------|-----|---------|-------------------|
+| **Cascade V8** | [v8.0.0](https://github.com/hugodury/annotation-tool-package-2/releases/tag/v8.0.0) | MiniLM + DeBERTa Large + Reranker (~4 Go) | **Oui** |
+| Base v1 (legacy) | [v1.0.0](https://github.com/hugodury/annotation-tool-package-2/releases/tag/v1.0.0) | DeBERTa-base, SBERT, cross-encoder | **Non** (plus dans la checklist UI) |
 
 ```text
 models/
-├── fine_tuned_*                 # v1
-└── cascade_v8/                  # v8 — vrai dossier (pas de symlink absolu)
+└── cascade_v8/
     ├── config.json
     └── models/{minilm_full_v7,deberta_large_v8.1,reranker_undetermined_v8}/
 ```
 
 Reranker > 2 Go GitHub → `.part00` / `.part01` réassemblés auto.  
-Checksums : `models.manifest.json`, `models-v8.manifest.json`.  
-Miroirs : `MODELS_DOWNLOAD_URL`, `CASCADE_V8_DOWNLOAD_URL_*` (`.env.example`).
-
-**Mainteneur** :
+Checksums : `models-v8.manifest.json`. Miroirs : `CASCADE_V8_DOWNLOAD_URL_*` (`.env.example`).
 
 ```bash
-python scripts/package_models.py
-python scripts/package_models_v8.py
+python scripts/download_models_v8.py   # utilisateur
+python scripts/package_models_v8.py    # mainteneur
 python scripts/publish_models_v8.py
 ```
 
-Sans Release / sans disque : **Cascade** et **Compare** indisponibles ; **Qwen only** OK dès qu’Ollama + Qwen sont prêts.
+Sans V8 : **Cascade** / **Compare** indisponibles ; **Qwen only** OK dès qu’Ollama + Qwen sont prêts.
 
 ---
 
@@ -202,21 +206,17 @@ Défaut : **`qwen2.5:7b-instruct`**.
 OLLAMA_LLM_MODEL=mon-modele:tag ./start.sh
 ```
 
-Copier `.env.example` → `.env` :
-
-| Variable | Rôle |
-|----------|------|
-| `OLLAMA_HOST` | URL Ollama (défaut `http://127.0.0.1:11434`) |
+| Variable `.env` | Rôle |
+|-----------------|------|
+| `OLLAMA_HOST` | URL Ollama |
 | `OLLAMA_LLM_MODEL` | Tag modèle |
-| `ANNOTATION_DATA_DIR` | Force le storage folder (verrouille Browse) |
+| `ANNOTATION_DATA_DIR` | Force le storage folder |
 | `CASCADE_V8_ROOT` | Override chemin Cascade V8 |
 | `CASCADE_V8_DOWNLOAD_URL_*` | Miroirs assets v8 |
-| `MODELS_DOWNLOAD_URL` | Miroir archive v1 |
 | `PYTORCH_INDEX_URL` | Index pip PyTorch |
 | `FLASK_HOST` / `FLASK_PORT` | Bind serveur |
 
-Timeouts / retries / estimation théorique interne : `cascade/config.json`
-(`inference.*`, `run_model.*`, `cascade_v8.*`).
+Config : `cascade/config.json` (`inference.*`, `run_model.*`, `cascade_v8.*`).
 
 ---
 
@@ -224,17 +224,16 @@ Timeouts / retries / estimation théorique interne : `cascade/config.json`
 
 | Emplacement | Rôle |
 |-------------|------|
-| Storage folder (UI / `ANNOTATION_DATA_DIR` / défaut `uploads/`) | JSON annotés + `backups/` |
+| Storage folder | JSON annotés + `backups/` |
 | `instance/storage_settings.json` | Dossier storage choisi |
-| `instance/storage_history.json` | Historique dossiers |
 | `instance/saved_sessions.json` | Registre sessions |
 | `instance/estimate_calibration.json` | Calibration temps **par mode** |
-| `instance/annotations.db` | Cache SQLite (Clear processing cache ne touche pas les JSON) |
-| `logs/run_model_session.log` | Log Run Model de la session serveur |
+| `instance/annotations.db` | Cache SQLite |
+| `logs/run_model_session.log` | Log Run Model |
 
-**Champs typiques par cible** : `related`, `similarity_annotation`, `cascade_route`,
-`model_confidence`, `llm_pred`, éventuellement `cascade_v8`, `pipeline_compare`
-(avec côté Qwen + côté Cascade pour Compare).
+**Champs par cible** : `related`, `similarity_annotation`, `cascade_route`,
+`model_confidence`, `annotated_by`, `annotated_by_label`, `cascade_v8`,
+éventuellement `pipeline_compare` (Compare).
 
 ---
 
@@ -242,17 +241,16 @@ Timeouts / retries / estimation théorique interne : `cascade/config.json`
 
 | Méthode | Route | Description |
 |---------|-------|-------------|
-| POST | `/auto_annotate` | Lance Run Model (`cascade_mode`, `force_reannotate`, indices) |
-| GET | `/api/auto_annotate/status` | Progression / résumé |
-| POST | `/api/auto_annotate/estimate` | Estimation (seulement si mode déjà calibré) |
+| POST | `/auto_annotate` | Run Model (`qwen_only` \| `v8_qwen` \| `compare`) |
+| GET | `/api/auto_annotate/status` | Progression |
+| POST | `/api/auto_annotate/estimate` | Estimation (si mode déjà calibré) |
 | POST | `/api/auto_annotate/cancel` | Annulation |
 | GET | `/api/system-check` | Checklist |
-| GET/POST | `/api/storage` | Lire / fixer le storage |
+| GET/POST | `/api/storage` | Storage folder |
 | POST | `/api/storage/pick` | Browse natif |
-| POST | `/api/upload/pick` | Choose JSON (copie vers storage) |
-| GET | `/api/sessions` | Sessions sauvegardées |
-| POST | `/api/sessions/load` | Recharger (copie vers storage si besoin) |
-| GET | `/api/dialogs/capabilities` | Sélecteurs OS disponibles |
+| POST | `/api/upload/pick` | Choose JSON |
+| GET | `/api/sessions` | Sessions |
+| POST | `/api/sessions/load` | Recharger session |
 
 ---
 
@@ -262,36 +260,22 @@ Timeouts / retries / estimation théorique interne : `cascade/config.json`
 docker compose up --build
 ```
 
-App + Ollama : détails dans **[DEPLOYMENT.md](DEPLOYMENT.md)**.
+Voir **[DEPLOYMENT.md](DEPLOYMENT.md)**.
 
 ---
 
-## Structure du dépôt
+## Structure
 
 ```
 annotation-tool-package-2/
-├── app.py                       # Flask + storage + API
-├── cascade/
-│   ├── core.py                  # qwen_only / v8_qwen / compare
-│   ├── v8_predictor.py          # Duo Zero Faute + Reranker
-│   ├── CASCADE_RULES.md
-│   ├── protocol.md / few_shot.json / config.json
-│   └── post_llm_regles.txt
-├── scripts/
-│   ├── setup.py                 # install cross-OS
-│   ├── download_models.py       # v1 puis v8
-│   ├── download_models_v8.py
-│   ├── run_model_job.py         # batch + calibration estimation
-│   ├── system_check.py          # checklist
-│   └── native_dialogs.py        # sélecteurs OS
-├── templates/index.html         # UI (anglais)
-├── static/app_extras.js
-├── models/                      # créé au 1er start — gitignored
-├── instance/                    # settings locaux — souvent gitignored
+├── app.py
+├── cascade/          # core, v8_predictor, protocol, CASCADE_RULES.md
+├── scripts/          # setup, download_models_v8, run_model_job, system_check
+├── templates/        # UI anglais
+├── models/           # gitignored — créé au 1er start (Release v8)
 ├── start.sh / start.bat / start.ps1
-├── docker-compose.yml / Dockerfile
-├── README.md
-└── DEPLOYMENT.md
+├── README.md / DEPLOYMENT.md
+└── docker-compose.yml
 ```
 
 ---
@@ -300,22 +284,18 @@ annotation-tool-package-2/
 
 | Problème | Piste |
 |----------|-------|
-| Run Model grisé | Checklist : modèles v1/v8, Ollama, Qwen |
-| Cascade / Compare KO, Qwen OK | `python scripts/download_models_v8.py` ou espace disque |
-| Pas d’estimation de temps | Normal au 1er run du mode — lancer une fois puis réessayer |
-| Fichiers toujours dans un vieux `uploads/` | Vérifier Storage folder ; rouvrir le JSON (copie vers storage) |
-| Sélecteur de dossier KO | Installer zenity/kdialog (Linux) ou laisser tkinter ; voir README dialogs |
-| Port 5000 occupé | Arrêter l’ancien `python app.py` / `fuser -k 5000/tcp` |
-| Clone sans modèles | Normal — lancer `./start.sh` (pas de poids dans Git) |
-
-Plus de détail : **[DEPLOYMENT.md](DEPLOYMENT.md)**.
+| Run Model grisé | Checklist : Cascade V8, Ollama, Qwen |
+| Cascade / Compare KO | `python scripts/download_models_v8.py` |
+| RAM ○ à 15 Go | Normal — reco Cascade ≥16 Go, **non bloquant** |
+| Pas d’estimation | 1er run du mode — calibrer puis réessayer |
+| Fichiers hors storage | Rouvrir le JSON (copie auto) |
+| Port 5000 occupé | `fuser -k 5000/tcp` puis relancer |
 
 ---
 
 ## Documentation liée
 
-- **[DEPLOYMENT.md](DEPLOYMENT.md)** — install multi-OS, Releases v1+v8, Docker, dépannage
+- **[DEPLOYMENT.md](DEPLOYMENT.md)** — install multi-OS, Release v8, Docker
 - **[cascade/CASCADE_RULES.md](cascade/CASCADE_RULES.md)** — règles Duo / Reranker / Qwen
-- **Release v1** — https://github.com/hugodury/annotation-tool-package-2/releases/tag/v1.0.0
 - **Release Cascade V8** — https://github.com/hugodury/annotation-tool-package-2/releases/tag/v8.0.0
-- **[AI_annotation](https://github.com/Cespriet/AI_annotation)** — entraînement, évaluation, sources V8
+- **[AI_annotation](https://github.com/Cespriet/AI_annotation)** — entraînement / sources V8

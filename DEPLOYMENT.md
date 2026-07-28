@@ -22,7 +22,7 @@ pas de symlink absolu machine-dépendante.
 |-----------|---------|-------|-------|
 | Python 3.9+ | ✓ | ✓ | ✓ |
 | Ollama | [ollama.com](https://ollama.com/) | idem | idem |
-| RAM | 10 Go+ (Qwen 7B) ; 16 Go confortable avec Cascade V8 | idem | idem |
+| RAM | 16 Go+ recommandés (Cascade + Qwen) ; 10 Go min. Qwen only | idem | idem |
 | Disque libre (1er lancement) | **~20 Go** (venv + v1 + v8 + Qwen + marge) | idem | idem |
 | Disque une fois installé | ~12–14 Go | idem | idem |
 

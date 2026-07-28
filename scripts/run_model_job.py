@@ -1980,8 +1980,6 @@ def _run_batch(
     backup_path: str | None = None,
     cascade_mode: str = "qwen_only",
 ) -> None:
-    import numpy as np
-
     try:
         with flask_app.app_context():
             _run_batch_inner(
@@ -2067,7 +2065,7 @@ def _run_batch_inner(
                 if mode == CASCADE_MODE_V8_QWEN or mode == CASCADE_MODE_COMPARE:
                     eng.ensure_v8()
                 load_box["engine"] = eng
-                load_box["sbert"] = app_mod.get_sbert_model()
+                # Release v1 (SBERT / DeBERTa-base) no longer required for Run Model.
             except BaseException as e:
                 load_errors.append(e)
 
@@ -2090,8 +2088,6 @@ def _run_batch_inner(
         logger.info("Models loaded in %ss (%s)", load_sec, hw_label)
 
         engine = load_box["engine"]
-        sbert = load_box["sbert"]
-
         with open(file_path, encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, dict):
@@ -2412,47 +2408,22 @@ def _run_batch_inner(
                     target["related"] = out["related"]
                     conf = (
                         out["llm_conf"]
-                        if route_name in {"consensus", "llm_auto", "v8_qwen"}
+                        if route_name in {"consensus", "llm_auto", "v8_qwen", "compare_agree"}
                         else out.get("v8_conf") or out["deberta_conf"]
                     )
                     target["model_confidence"] = (
                         round(conf, 4) if conf is not None else None
                     )
-                    if route_name in {"consensus", "v8_qwen"}:
-                        target["similarity_annotation"] = round(out["llm_sim"], 4)
-                    elif route_name in {"v8_duo", "v8_reranker"}:
+                    if route_name in {"v8_duo", "v8_reranker"}:
                         target["similarity_annotation"] = out.get("similarity_annotation")
                     else:
-                        if _abort_cancelled():
-                            return
-                        try:
-                            embs = _run_cancellable(
-                                lambda: sbert.encode(
-                                    [anchor_text, target_text],
-                                    show_progress_bar=False,
-                                ),
-                                _cancelled,
-                            )
-                        except BatchCancelledError:
-                            logger.info(
-                                "Batch cancelled during SBERT encoding ref_index=%s target=%s/%s",
-                                idx,
-                                i + 1,
-                                len(targets),
-                            )
-                            _abort_cancelled()
-                            return
-                        emb_anchor, emb_target = embs[0], embs[1]
-                        sim = np.dot(emb_anchor, emb_target) / (
-                            np.linalg.norm(emb_anchor) * np.linalg.norm(emb_target)
-                        )
-                        target["similarity_annotation"] = round(
-                            max(0.0, min(1.0, float(sim))), 4
-                        )
-                        # La regle not_related/sim s'applique sur le score FINAL
-                        # (SBERT), pas seulement sur le score LLM : sinon Qwen peut
-                        # poser not_related avec sim LLM basse, puis SBERT ecrase
-                        # a 0.48 et le label reste contradictoire.
+                        # Qwen only / Cascade→Qwen / Compare agree : sim LLM
+                        sim = out.get("llm_sim")
+                        if sim is None:
+                            sim = out.get("similarity_annotation")
+                        if sim is not None:
+                            target["similarity_annotation"] = round(float(sim), 4)
+                    if target.get("similarity_annotation") is not None:
                         from cascade.core import enforce_label_sim_consistency
 
                         target["related"] = enforce_label_sim_consistency(
