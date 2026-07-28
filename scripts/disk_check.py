@@ -54,13 +54,15 @@ def full_install_disk_gb(
     cfg = cfg or {}
     breakdown: dict[str, float] = {}
 
-    # Release v1 (DeBERTa-base / SBERT) is unused by current Run Model modes — not counted.
     v8_manifest_path = root / "models-v8.manifest.json"
     if v8_manifest_path.is_file():
         v8 = json.loads(v8_manifest_path.read_text(encoding="utf-8"))
         breakdown["modeles_cascade_v8"] = float(v8.get("required_free_gb", 7.0))
     else:
         breakdown["modeles_cascade_v8"] = 7.0
+
+    # Fine-tuned SBERT (~418 Mo weights; from Release v1 / AI_annotation)
+    breakdown["modele_sbert"] = 0.5
 
     breakdown["venv_et_dependances"] = VENV_AND_DEPS_GB
 

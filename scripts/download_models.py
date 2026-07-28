@@ -43,6 +43,21 @@ def models_complete(manifest: dict) -> bool:
     return True
 
 
+def sbert_complete(manifest: dict | None = None) -> bool:
+    """SBERT alone is required for Run Model similarity scores."""
+    rel = "models/fine_tuned_sbert/model.safetensors"
+    path = ROOT / rel
+    if not path.is_file():
+        return False
+    if manifest is None and MANIFEST_PATH.is_file():
+        manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+    expected = (manifest or {}).get("checksums", {}).get(rel)
+    if expected and _sha256(path) != expected:
+        print(f"Checksum mismatch: {rel}", file=sys.stderr)
+        return False
+    return True
+
+
 def _download(url: str, dest: Path) -> None:
     print(f"Downloading models from {url}")
     req = urllib.request.Request(url, headers={"User-Agent": "vldbench-setup/1.0"})
@@ -91,8 +106,9 @@ def download_models(force: bool = False) -> bool:
         return False
 
     manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
-    if not force and models_complete(manifest):
-        print("ML models already present and verified.")
+    # Run Model needs SBERT (similarity). Archive v1 also ships legacy DeBERTa-base / CE.
+    if not force and sbert_complete(manifest):
+        print("SBERT (similarity) already present and verified.")
         base_ok = True
     else:
         base_ok = False
@@ -108,6 +124,7 @@ def download_models(force: bool = False) -> bool:
             )
             return False
 
+        print("Downloading Release v1.0.0 (SBERT + legacy weights)…")
         with tempfile.TemporaryDirectory() as tmp:
             archive_path = Path(tmp) / archive_name
             last_err: Exception | None = None
@@ -126,11 +143,16 @@ def download_models(force: bool = False) -> bool:
             with tarfile.open(archive_path, "r:gz") as tar:
                 tar.extractall(path=ROOT)
 
-        if models_complete(manifest):
-            print("Models installed successfully.")
+        if sbert_complete(manifest):
+            print("SBERT installed successfully.")
             base_ok = True
+            if not models_complete(manifest):
+                print(
+                    "Note: full v1 package incomplete, but SBERT (required) is OK.",
+                    file=sys.stderr,
+                )
         else:
-            print("Download finished but model verification failed.", file=sys.stderr)
+            print("Download finished but SBERT verification failed.", file=sys.stderr)
             return False
 
     # Cascade V8 (MiniLM + DeBERTa Large + Reranker) — même flux Release multi-OS
@@ -155,7 +177,9 @@ def download_models(force: bool = False) -> bool:
 def main() -> int:
     import argparse
 
-    parser = argparse.ArgumentParser(description="Download VLDBench fine-tuned models")
+    parser = argparse.ArgumentParser(
+        description="Download VLDBench models (SBERT + Cascade V8) — multi-OS / fresh git clone"
+    )
     parser.add_argument("--force", action="store_true", help="Re-download even if present")
     args = parser.parse_args()
     ok = download_models(force=args.force)

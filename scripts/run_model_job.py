@@ -2065,7 +2065,8 @@ def _run_batch_inner(
                 if mode == CASCADE_MODE_V8_QWEN or mode == CASCADE_MODE_COMPARE:
                     eng.ensure_v8()
                 load_box["engine"] = eng
-                # Release v1 (SBERT / DeBERTa-base) no longer required for Run Model.
+                # Trained SBERT (AI_annotation / Release v1) — similarity scores only
+                load_box["sbert"] = app_mod.get_sbert_model()
             except BaseException as e:
                 load_errors.append(e)
 
@@ -2088,6 +2089,7 @@ def _run_batch_inner(
         logger.info("Models loaded in %ss (%s)", load_sec, hw_label)
 
         engine = load_box["engine"]
+        sbert = load_box["sbert"]
         with open(file_path, encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, dict):
@@ -2414,24 +2416,52 @@ def _run_batch_inner(
                     target["model_confidence"] = (
                         round(conf, 4) if conf is not None else None
                     )
-                    if route_name in {"v8_duo", "v8_reranker"}:
-                        target["similarity_annotation"] = out.get("similarity_annotation")
-                    else:
-                        # Qwen only / Cascade→Qwen / Compare agree : sim LLM
-                        sim = out.get("llm_sim")
-                        if sim is None:
-                            sim = out.get("similarity_annotation")
-                        if sim is not None:
-                            target["similarity_annotation"] = round(float(sim), 4)
-                    if target.get("similarity_annotation") is not None:
-                        from cascade.core import enforce_label_sim_consistency
-
-                        target["related"] = enforce_label_sim_consistency(
-                            target.get("related"),
-                            target["similarity_annotation"],
-                            anchor=anchor_text,
-                            target=target_text,
+                    # Keep LLM / cascade default sim for reference; final score = SBERT.
+                    if out.get("llm_sim") is not None:
+                        target["llm_sim"] = round(float(out["llm_sim"]), 4)
+                    elif out.get("similarity_annotation") is not None:
+                        target["cascade_sim"] = round(
+                            float(out["similarity_annotation"]), 4
                         )
+
+                    if _abort_cancelled():
+                        return
+                    try:
+                        import numpy as np
+
+                        embs = _run_cancellable(
+                            lambda: sbert.encode(
+                                [anchor_text, target_text],
+                                show_progress_bar=False,
+                            ),
+                            _cancelled,
+                        )
+                    except BatchCancelledError:
+                        logger.info(
+                            "Batch cancelled during SBERT encoding ref_index=%s target=%s/%s",
+                            idx,
+                            i + 1,
+                            len(targets),
+                        )
+                        _abort_cancelled()
+                        return
+                    emb_anchor, emb_target = embs[0], embs[1]
+                    sim = float(
+                        np.dot(emb_anchor, emb_target)
+                        / (np.linalg.norm(emb_anchor) * np.linalg.norm(emb_target))
+                    )
+                    target["similarity_annotation"] = round(
+                        max(0.0, min(1.0, sim)), 4
+                    )
+                    target["similarity_source"] = "sbert"
+                    from cascade.core import enforce_label_sim_consistency
+
+                    target["related"] = enforce_label_sim_consistency(
+                        target.get("related"),
+                        target["similarity_annotation"],
+                        anchor=anchor_text,
+                        target=target_text,
+                    )
                     targets_annotated_count += 1
                     routing_stats[route_name] = routing_stats.get(route_name, 0) + 1
                 elif route_name == "compare_disagree":

@@ -14,6 +14,7 @@ Interface web **entièrement en anglais**. Compatible **Windows, macOS et Linux*
 |-----------|------|
 | **Dépôt GitHub** | https://github.com/hugodury/annotation-tool-package-2 |
 | **Release Cascade V8 (v8.0.0)** | https://github.com/hugodury/annotation-tool-package-2/releases/tag/v8.0.0 |
+| **Release SBERT (v1.0.0)** | https://github.com/hugodury/annotation-tool-package-2/releases/tag/v1.0.0 |
 | **Workspace modèles / cascade CLI** | https://github.com/Cespriet/AI_annotation |
 | **Déploiement multi-OS** | [DEPLOYMENT.md](DEPLOYMENT.md) |
 
@@ -23,10 +24,10 @@ cd annotation-tool-package-2
 ```
 
 > **PC neuf / clone GitHub** : une seule commande de démarrage (ci-dessous).
-> Elle crée le venv, installe PyTorch + deps, télécharge **Cascade V8**, démarre Ollama et tire Qwen.
+> Elle crée le venv, installe PyTorch + deps, télécharge **SBERT** (similarité) + **Cascade V8** (labels), démarre Ollama et tire Qwen.
 > **1er lancement** : 15–45 min (réseau / machine). Internet requis **une seule fois**.
-> Les poids ML **ne sont pas dans Git** — Release GitHub `v8.0.0` automatique.
-> L’ancienne Release **v1** (DeBERTa-base / SBERT) n’est **plus utilisée** par Run Model.
+> Les poids ML **ne sont pas dans Git** — Releases GitHub `v1.0.0` (SBERT) + `v8.0.0` (Cascade).
+> **Labels** = Duo / Reranker / Qwen ; **`similarity_annotation`** = cosine SBERT entraîné ([AI_annotation](https://github.com/Cespriet/AI_annotation)).
 
 ---
 
@@ -54,11 +55,11 @@ Puis ouvrir **http://127.0.0.1:5000**
 | Python | 3.9+ (3.12+ recommandé) — [python.org](https://www.python.org/downloads/) |
 | Ollama | [ollama.com](https://ollama.com/) |
 | RAM | **≥ 16 Go** recommandés pour **Cascade + Qwen** (non bloquant) ; ≥ **10 Go** minimum pour Qwen only |
-| Disque (1er lancement) | **~15 Go libres** (venv + Cascade V8 ~4–7 Go + Qwen ~4 Go + marge) |
+| Disque (1er lancement) | **~16 Go libres** (venv + Cascade V8 ~4–7 Go + SBERT ~0,5 Go + Qwen ~4 Go + marge) |
 | Disque (déjà installé) | espace libre restant peut être faible (normal) |
 | GPU | Optionnel. DeBERTa Large (Cascade) tourne en **CPU** (stabilité) |
 
-Le script installe : venv, PyTorch (CPU / CUDA / MPS), modèles Cascade V8, pull Qwen.
+Le script installe : venv, PyTorch (CPU / CUDA / MPS), **SBERT** (similarité) + modèles Cascade V8, pull Qwen.
 
 ---
 
@@ -70,6 +71,7 @@ Au chargement (`/api/system-check`) :
 |------|--------|------|
 | System / Python / PyTorch / sentence-transformers ≥ 5.5 | oui | Runtime |
 | **Cascade V8 models (Release v8)** | oui | Duo + Reranker pour Cascade / Compare |
+| **SBERT model (Release v1)** | oui | Cosine → `similarity_annotation` (AI_annotation / Release v1) |
 | Ollama installé + running | oui | Serveur LLM |
 | **LLM qwen2.5:7b-instruct** | oui | Qwen only + dernier étage Cascade + Compare |
 | RAM ≥ 16 Go (Cascade) | **non** | Recommandé seulement — n’empêche pas Run Model |
@@ -87,6 +89,7 @@ La RAM ○ / ✓ est purement informative.
 
 Chaque paire (référence, cible) passe par **Qwen P3 + post-LLM**.
 Pas de Duo / Reranker.
+Le score **`similarity_annotation`** est toujours calculé par **SBERT** (cosine), quel que soit le mode.
 
 ### 2. Annotate — Cascade incl. Qwen (`v8_qwen`)
 
@@ -171,30 +174,32 @@ Protocole : `cascade/protocol.md` · Few-shot : `cascade/few_shot.json` · Post-
 ## Modèles ML — Releases multi-OS (hors Git)
 
 `.gitignore` → `/models/`.  
-Run Model actuel nécessite **uniquement Cascade V8** (+ Qwen via Ollama).
+Run Model nécessite **Cascade V8** (labels) + **SBERT** (similarité) + Qwen via Ollama.
 
 | Release | Tag | Contenu | Requis Run Model ? |
 |---------|-----|---------|-------------------|
-| **Cascade V8** | [v8.0.0](https://github.com/hugodury/annotation-tool-package-2/releases/tag/v8.0.0) | MiniLM + DeBERTa Large + Reranker (~4 Go) | **Oui** |
-| Base v1 (legacy) | [v1.0.0](https://github.com/hugodury/annotation-tool-package-2/releases/tag/v1.0.0) | DeBERTa-base, SBERT, cross-encoder | **Non** (plus dans la checklist UI) |
+| **Cascade V8** | [v8.0.0](https://github.com/hugodury/annotation-tool-package-2/releases/tag/v8.0.0) | MiniLM + DeBERTa Large + Reranker (~4 Go) | **Oui** (labels) |
+| **Base v1 (SBERT)** | [v1.0.0](https://github.com/hugodury/annotation-tool-package-2/releases/tag/v1.0.0) | SBERT (+ DeBERTa-base / cross-encoder legacy) | **Oui** (SBERT pour `similarity_annotation`) |
 
 ```text
 models/
+├── fine_tuned_sbert/          # similarité (AI_annotation)
 └── cascade_v8/
     ├── config.json
     └── models/{minilm_full_v7,deberta_large_v8.1,reranker_undetermined_v8}/
 ```
 
 Reranker > 2 Go GitHub → `.part00` / `.part01` réassemblés auto.  
-Checksums : `models-v8.manifest.json`. Miroirs : `CASCADE_V8_DOWNLOAD_URL_*` (`.env.example`).
+Checksums : `models-v8.manifest.json` / `models.manifest.json`. Miroirs : `CASCADE_V8_DOWNLOAD_URL_*` (`.env.example`).
 
 ```bash
-python scripts/download_models_v8.py   # utilisateur
+python scripts/download_models_v8.py   # Cascade V8
+python scripts/download_models.py      # SBERT (archive v1)
 python scripts/package_models_v8.py    # mainteneur
 python scripts/publish_models_v8.py
 ```
 
-Sans V8 : **Cascade** / **Compare** indisponibles ; **Qwen only** OK dès qu’Ollama + Qwen sont prêts.
+Sans V8 : **Cascade** / **Compare** indisponibles. Sans SBERT : Run Model bloqué (checklist). **Qwen** via Ollama reste requis pour tous les modes.
 
 ---
 
@@ -231,9 +236,9 @@ Config : `cascade/config.json` (`inference.*`, `run_model.*`, `cascade_v8.*`).
 | `instance/annotations.db` | Cache SQLite |
 | `logs/run_model_session.log` | Log Run Model |
 
-**Champs par cible** : `related`, `similarity_annotation`, `cascade_route`,
-`model_confidence`, `annotated_by`, `annotated_by_label`, `cascade_v8`,
-éventuellement `pipeline_compare` (Compare).
+**Champs par cible** : `related`, `similarity_annotation` (SBERT), `similarity_source`,
+`cascade_route`, `model_confidence`, `annotated_by`, `annotated_by_label`, `cascade_v8`,
+éventuellement `llm_sim` / `cascade_sim` (référence) et `pipeline_compare` (Compare).
 
 ---
 
@@ -270,9 +275,9 @@ Voir **[DEPLOYMENT.md](DEPLOYMENT.md)**.
 annotation-tool-package-2/
 ├── app.py
 ├── cascade/          # core, v8_predictor, protocol, CASCADE_RULES.md
-├── scripts/          # setup, download_models_v8, run_model_job, system_check
+├── scripts/          # setup, download_models(+v8), run_model_job, system_check
 ├── templates/        # UI anglais
-├── models/           # gitignored — créé au 1er start (Release v8)
+├── models/           # gitignored — SBERT (v1) + cascade_v8 (v8) au 1er start
 ├── start.sh / start.bat / start.ps1
 ├── README.md / DEPLOYMENT.md
 └── docker-compose.yml
@@ -284,8 +289,9 @@ annotation-tool-package-2/
 
 | Problème | Piste |
 |----------|-------|
-| Run Model grisé | Checklist : Cascade V8, Ollama, Qwen |
+| Run Model grisé | Checklist : Cascade V8, **SBERT**, Ollama, Qwen |
 | Cascade / Compare KO | `python scripts/download_models_v8.py` |
+| SBERT / similarity KO | `python scripts/download_models.py` (Release v1) |
 | RAM ○ à 15 Go | Normal — reco Cascade ≥16 Go, **non bloquant** |
 | Pas d’estimation | 1er run du mode — calibrer puis réessayer |
 | Fichiers hors storage | Rouvrir le JSON (copie auto) |
@@ -295,7 +301,8 @@ annotation-tool-package-2/
 
 ## Documentation liée
 
-- **[DEPLOYMENT.md](DEPLOYMENT.md)** — install multi-OS, Release v8, Docker
+- **[DEPLOYMENT.md](DEPLOYMENT.md)** — install multi-OS, Releases v1/v8, Docker
 - **[cascade/CASCADE_RULES.md](cascade/CASCADE_RULES.md)** — règles Duo / Reranker / Qwen
 - **Release Cascade V8** — https://github.com/hugodury/annotation-tool-package-2/releases/tag/v8.0.0
-- **[AI_annotation](https://github.com/Cespriet/AI_annotation)** — entraînement / sources V8
+- **Release SBERT (v1)** — https://github.com/hugodury/annotation-tool-package-2/releases/tag/v1.0.0
+- **[AI_annotation](https://github.com/Cespriet/AI_annotation)** — entraînement SBERT / sources V8

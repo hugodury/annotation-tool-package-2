@@ -7,6 +7,11 @@ FLASK_HOST="${FLASK_HOST:-0.0.0.0}"
 FLASK_PORT="${FLASK_PORT:-5000}"
 export FLASK_HOST FLASK_PORT
 
+if [ "${SKIP_MODEL_DOWNLOAD:-0}" != "1" ]; then
+  echo "[entrypoint] Checking ML models (SBERT + Cascade V8)…"
+  python scripts/download_models.py || echo "[entrypoint] Model download warning — check logs / volume mounts."
+fi
+
 echo "[entrypoint] Attente d Ollama (${OLLAMA_HOST})…"
 TRIES=0
 until curl -sf "${OLLAMA_HOST}/api/tags" >/dev/null 2>&1; do

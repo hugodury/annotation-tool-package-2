@@ -695,6 +695,7 @@
                             <li><strong>Annotate — Qwen only</strong> — every target through Qwen P3 + post-LLM (no Duo / Reranker).</li>
                             <li><strong>Annotate — Cascade (incl. Qwen)</strong> — Duo Zero Faute (MiniLM + DeBERTa Large) → Reranker undetermined (≥0.70) → else <em>Qwen P3 + post-LLM</em>. Qwen is the last stage of the cascade. Thresholds in <code>models/cascade_v8/config.json</code>.</li>
                             <li><strong>Compare — Qwen ↔ Cascade (incl. Qwen)</strong> — runs those two pipelines only; same label → auto-annotate; mismatch → needs review with side-by-side detail.</li>
+                            <li><strong>Similarity score</strong>: always from fine-tuned <strong>SBERT</strong> (cosine) → <code>similarity_annotation</code>. Labels stay Duo / Reranker / Qwen.</li>
                             <li><strong>Time estimate</strong>: shown only after a first completed Run Model <em>in the same mode</em> (Qwen only and Cascade are calibrated separately). No theoretical guess on a cold start.</li>
                             <li><strong>Run Model</strong> resumes at the first incomplete reference and skips finished targets — unless you choose to overwrite.</li>
                             <li><strong>Re-annotate</strong>: if the range is partially or fully annotated, a confirmation asks whether to overwrite.</li>
@@ -702,7 +703,7 @@
                         </ul>
                     </div>
                     <small id="runEstimateHint" class="run-estimate-hint"></small>
-                    <small class="text-muted d-block">Available when checklist is valid (Cascade weights + Qwen/Ollama for Cascade &amp; Compare; Qwen alone needs Ollama).</small>
+                    <small class="text-muted d-block">Available when checklist is valid (Cascade V8 + SBERT + Qwen/Ollama).</small>
                     <div id="autoAnnotateStatus" class="mt-2"></div>
                 </div>
             </div>
@@ -1394,7 +1395,7 @@
 
             if (!installDone && freshGb) {
                 installNote.textContent =
-                    `Full install (first run): ~${freshGb} GB free recommended (venv + Cascade V8 + Qwen).`;
+                    `Full install (first run): ~${freshGb} GB free recommended (venv + Cascade V8 + SBERT + Qwen).`;
             } else if (installDone && hw.disk_free_gb != null) {
                 installNote.textContent =
                     `Install complete — ${hw.disk_free_gb} GB free on disk (the ~${freshGb || 20} GB figure only applies to a fresh PC).`;

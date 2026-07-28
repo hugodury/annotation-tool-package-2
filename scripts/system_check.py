@@ -100,8 +100,13 @@ def ollama_state(host: str = "http://127.0.0.1:11434") -> dict[str, Any]:
     return {"installed": installed, "running": running, "host": host, "models": models}
 
 
+def ml_models_sbert_ok(root: Path) -> bool:
+    """SBERT entraîné (AI_annotation / Release v1) — scores de similarité."""
+    return (root / "models/fine_tuned_sbert/model.safetensors").is_file()
+
+
 def ml_models_base_ok(root: Path) -> bool:
-    """Release v1.0.0 — DeBERTa-base / SBERT / cross-encoder."""
+    """Release v1.0.0 — DeBERTa-base / SBERT / cross-encoder (legacy package)."""
     required = [
         "models/fine_tuned_deberta_base_expanded/model.safetensors",
         "models/fine_tuned_sbert/model.safetensors",
@@ -122,8 +127,8 @@ def cascade_v8_models_ok(root: Path) -> bool:
 
 
 def ml_models_ok(root: Path) -> bool:
-    """Poids requis pour les pipelines actuels (Cascade V8 ; v1 optionnel)."""
-    return cascade_v8_models_ok(root)
+    """Poids requis : Cascade V8 (labels) + SBERT (similarité)."""
+    return cascade_v8_models_ok(root) and ml_models_sbert_ok(root)
 
 
 def recommended_llm(ram: float, profiles: list[dict]) -> dict | None:
@@ -190,6 +195,7 @@ def build_checklist(
     models_ok: bool,
     models_base_ok: bool,
     models_v8_ok: bool,
+    models_sbert_ok: bool,
     ollama: dict[str, Any],
     cfg: dict,
     mem: float,
@@ -292,6 +298,18 @@ def build_checklist(
             "action": "python scripts/download_models_v8.py" if not models_v8_ok else None,
         },
         {
+            "id": "ml_models_sbert",
+            "label": "SBERT model (Release v1)",
+            "ok": models_sbert_ok,
+            "required": True,
+            "detail": (
+                "Installed — cosine → similarity_annotation (AI_annotation / GitHub Release v1.0.0)"
+                if models_sbert_ok
+                else "Missing — ./start.sh downloads it automatically (same as Cascade V8)"
+            ),
+            "action": "./start.sh  (or: python scripts/download_models.py)" if not models_sbert_ok else None,
+        },
+        {
             "id": "ollama_installed",
             "label": "Ollama installed",
             "ok": bool(ollama.get("installed")),
@@ -380,7 +398,8 @@ def build_report(root: Path | None = None, cfg: dict | None = None) -> dict[str,
     gpu = gpu_info()
     models_base_ok = ml_models_base_ok(root)
     models_v8_ok = cascade_v8_models_ok(root)
-    models_ok = models_base_ok and models_v8_ok
+    models_sbert_ok = ml_models_sbert_ok(root)
+    models_ok = ml_models_ok(root)  # Cascade V8 + SBERT
     rec_llm = recommended_llm(mem, profiles) if profiles else None
     llm_ok, _llm_tag = llm_model_pulled(ollama, cfg)
     deps = deps_ok()
@@ -438,6 +457,11 @@ def build_report(root: Path | None = None, cfg: dict | None = None) -> dict[str,
                 "Cascade V8 models missing (MiniLM / DeBERTa Large / Reranker). "
                 "Run ./start.sh or: python scripts/download_models_v8.py (Release v8.0.0). "
                 "Cascade V8 still needs Qwen via Ollama for the last stage."
+            )
+        if not models_sbert_ok:
+            warnings.append(
+                "SBERT missing (similarity scores). "
+                "Run ./start.sh or: python scripts/download_models.py (Release v1.0.0)."
             )
         if ollama["installed"] and ollama["running"] and rec_llm and not llm_ok:
             active = cfg.get("llm", {}).get("ollama", rec_llm["ollama"])
@@ -508,6 +532,7 @@ def build_report(root: Path | None = None, cfg: dict | None = None) -> dict[str,
         models_ok=models_ok,
         models_base_ok=models_base_ok,
         models_v8_ok=models_v8_ok,
+        models_sbert_ok=models_sbert_ok,
         ollama=ollama,
         cfg=cfg,
         mem=mem,
@@ -541,6 +566,7 @@ def build_report(root: Path | None = None, cfg: dict | None = None) -> dict[str,
         "ml_models": models_ok,
         "ml_models_base": models_base_ok,
         "ml_models_v8": models_v8_ok,
+        "ml_models_sbert": models_sbert_ok,
         "recommended_llm": rec_llm,
         "active_llm": cfg.get("llm"),
         "performance": performance,

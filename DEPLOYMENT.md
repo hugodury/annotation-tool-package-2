@@ -60,8 +60,8 @@ Le script `scripts/setup.py` :
 5. Démarre Ollama si besoin et pull Qwen 7B
 6. Lance l'app sur http://127.0.0.1:5000
 
-Après ça, les modes **Qwen only**, **DeBERTa + Qwen**, **Cascade V8 + Qwen** et
-**Compare Qwen ↔ Cascade V8** fonctionnent sur n'importe quel PC.
+Après ça, les modes **Qwen only**, **Cascade V8 + Qwen** et
+**Compare Qwen ↔ Cascade V8** fonctionnent ; le score **`similarity_annotation`** vient du **SBERT** (Release v1 / AI_annotation).
 
 ---
 
