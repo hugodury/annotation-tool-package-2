@@ -1367,6 +1367,9 @@ def clear_target_for_reannotate(target: dict) -> None:
         "llm_pred",
         "llm_confidence",
         "pipeline_compare",
+        "cascade_v8",
+        "annotated_by",
+        "annotated_by_label",
     ):
         target.pop(key, None)
 
@@ -2320,6 +2323,40 @@ def _run_batch_inner(
                         "deberta": out.get("v8_deberta_label"),
                         "reranker_undet": out.get("v8_reranker_undet_prob"),
                     }
+                # Who decided the label (visible in UI + JSON)
+                if route_name == "v8_duo":
+                    target["annotated_by"] = "duo"
+                    target["annotated_by_label"] = "Duo (MiniLM + DeBERTa Large)"
+                elif route_name == "v8_reranker":
+                    target["annotated_by"] = "reranker"
+                    target["annotated_by_label"] = "Reranker (undetermined)"
+                elif route_name == "v8_qwen":
+                    target["annotated_by"] = "qwen"
+                    target["annotated_by_label"] = "Qwen (Cascade fallback)"
+                elif route_name in {"llm_auto", "consensus"}:
+                    target["annotated_by"] = "qwen"
+                    target["annotated_by_label"] = "Qwen"
+                elif route_name == "compare_agree":
+                    c_side = (out.get("pipeline_compare") or {}).get("deberta_qwen") or {}
+                    c_route = c_side.get("route") or ""
+                    if c_route == "v8_duo":
+                        target["annotated_by"] = "duo"
+                        target["annotated_by_label"] = "Compare agree · Cascade Duo"
+                    elif c_route == "v8_reranker":
+                        target["annotated_by"] = "reranker"
+                        target["annotated_by_label"] = "Compare agree · Cascade Reranker"
+                    elif c_route == "v8_qwen":
+                        target["annotated_by"] = "qwen"
+                        target["annotated_by_label"] = "Compare agree · Cascade Qwen"
+                    else:
+                        target["annotated_by"] = "compare"
+                        target["annotated_by_label"] = "Compare agree (Qwen = Cascade)"
+                elif route_name == "compare_disagree":
+                    target["annotated_by"] = "compare_disagree"
+                    target["annotated_by_label"] = "Compare disagree — needs review"
+                elif route_name in {"human", "rejected"}:
+                    target["annotated_by"] = "review"
+                    target["annotated_by_label"] = "Needs human review"
                 if out.get("pipeline_compare"):
                     target["pipeline_compare"] = out["pipeline_compare"]
                     cmp = out["pipeline_compare"]

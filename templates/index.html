@@ -727,10 +727,11 @@
                 <div id="processingStatus" class="mt-2 fw-bold"></div>
                 <div id="corpusStats" style="display:none;"></div>
                 <div id="cascadeLegend">
-                    <i class="fas fa-robot" style="color:#0f5132"></i> Pre-filled (auto) &nbsp;
-                    <i class="fas fa-brain" style="color:#084298"></i> LLM consensus &nbsp;
+                    <i class="fas fa-layer-group" style="color:#0f5132"></i> Duo (MiniLM+DeBERTa) &nbsp;
+                    <i class="fas fa-filter" style="color:#432874"></i> Reranker &nbsp;
+                    <i class="fas fa-brain" style="color:#084298"></i> Qwen &nbsp;
                     <i class="fas fa-user-edit" style="color:#664d03"></i> Needs validation &nbsp;
-                    <i class="fas fa-pen" style="color:#0d6efd"></i> Manually annotated
+                    <i class="fas fa-pen" style="color:#0d6efd"></i> Manual
                 </div>
             </div>
             <button id="btnNext" class="btn btn-outline-primary">Next<i class="fas fa-chevron-right ms-2"></i></button>
@@ -1589,6 +1590,121 @@
             return 'Pending annotation';
         }
 
+        function resolveAnnotator(target) {
+            const route = target?.cascade_route || '';
+            const v8 = target?.cascade_v8 || {};
+            const by = target?.annotated_by || '';
+            const labelSaved = target?.annotated_by_label || '';
+            const conf = target?.model_confidence;
+            const confPct = (typeof conf === 'number' && isFinite(conf))
+                ? ` ${Math.round(conf * 100)}%`
+                : '';
+            const rule = v8.rule ? ` · ${v8.rule}` : '';
+
+            if (by === 'duo' || route === 'v8_duo') {
+                return {
+                    key: 'duo',
+                    short: 'Duo',
+                    label: labelSaved || 'Annotated by Duo (MiniLM + DeBERTa Large)',
+                    badgeText: `By: Duo${confPct}${rule}`,
+                    icon: 'fa-layer-group',
+                    bg: '#d1e7dd', fg: '#0f5132', border: '#badbcc',
+                };
+            }
+            if (by === 'reranker' || route === 'v8_reranker') {
+                return {
+                    key: 'reranker',
+                    short: 'Reranker',
+                    label: labelSaved || 'Annotated by Reranker (undetermined)',
+                    badgeText: `By: Reranker${confPct}`,
+                    icon: 'fa-filter',
+                    bg: '#e2d9f3', fg: '#432874', border: '#d2c4ef',
+                };
+            }
+            if (by === 'qwen' || route === 'v8_qwen') {
+                return {
+                    key: 'qwen',
+                    short: 'Qwen',
+                    label: labelSaved || 'Annotated by Qwen (Cascade fallback)',
+                    badgeText: route === 'v8_qwen' ? `By: Qwen (Cascade)${confPct}` : `By: Qwen${confPct}`,
+                    icon: 'fa-brain',
+                    bg: '#cfe2ff', fg: '#084298', border: '#b6d4fe',
+                };
+            }
+            if (route === 'llm_auto' || route === 'consensus') {
+                return {
+                    key: 'qwen',
+                    short: 'Qwen',
+                    label: labelSaved || 'Annotated by Qwen',
+                    badgeText: `By: Qwen${confPct}`,
+                    icon: 'fa-brain',
+                    bg: '#cfe2ff', fg: '#084298', border: '#b6d4fe',
+                };
+            }
+            if (route === 'compare_agree') {
+                const cRoute = target?.pipeline_compare?.deberta_qwen?.route
+                    || target?.pipeline_compare?.cascade?.route || '';
+                const side = cRoute === 'v8_duo' ? 'Duo'
+                    : cRoute === 'v8_reranker' ? 'Reranker'
+                    : cRoute === 'v8_qwen' ? 'Qwen' : 'Cascade';
+                return {
+                    key: 'compare',
+                    short: 'Compare',
+                    label: labelSaved || `Compare agree · Cascade side: ${side}`,
+                    badgeText: `Compare agree · Cascade: ${side}`,
+                    icon: 'fa-code-compare',
+                    bg: '#d1e7dd', fg: '#0f5132', border: '#badbcc',
+                };
+            }
+            if (route === 'deberta_auto' || route === 'deberta_ambiguous') {
+                return {
+                    key: 'deberta',
+                    short: 'DeBERTa',
+                    label: 'Annotated by DeBERTa-base (legacy)',
+                    badgeText: `By: DeBERTa${confPct}`,
+                    icon: 'fa-robot',
+                    bg: '#d1e7dd', fg: '#0f5132', border: '#badbcc',
+                };
+            }
+            if (route === 'human' || route === 'rejected' || route === 'compare_disagree' || by === 'review') {
+                return {
+                    key: 'review',
+                    short: 'Review',
+                    label: labelSaved || 'Needs human review',
+                    badgeText: route === 'rejected' ? 'Rejected — review' : 'Needs review',
+                    icon: 'fa-user-edit',
+                    bg: '#fff3cd', fg: '#664d03', border: '#ffecb5',
+                };
+            }
+            return null;
+        }
+
+        function formatAnnotatorBadge(target) {
+            const info = resolveAnnotator(target);
+            if (!info) return '';
+            return `<span class="badge" title="${info.label}" style="background:${info.bg};color:${info.fg};border:1px solid ${info.border};font-size:0.75rem;padding:4px 8px;border-radius:6px;margin-left:8px;"><i class="fas ${info.icon} me-1"></i>${info.badgeText}</span>`;
+        }
+
+        function formatCascadeDecisionDetail(target) {
+            const v8 = target?.cascade_v8;
+            const info = resolveAnnotator(target);
+            if (!info && !v8) return '';
+            const parts = [];
+            if (info) parts.push(`<b>Annotated by:</b> ${info.label}`);
+            if (v8) {
+                const bits = [];
+                if (v8.stage) bits.push(`stage=${v8.stage}`);
+                if (v8.rule) bits.push(`rule=${v8.rule}`);
+                if (v8.minilm) bits.push(`MiniLM=${v8.minilm}`);
+                if (v8.deberta) bits.push(`DeBERTa=${v8.deberta}`);
+                if (v8.confidence != null) bits.push(`conf=${v8.confidence}`);
+                if (v8.reranker_undet != null) bits.push(`reranker_undet=${v8.reranker_undet}`);
+                if (bits.length) parts.push(`<span class="text-muted">${bits.join(' · ')}</span>`);
+            }
+            if (!parts.length) return '';
+            return `<div class="mt-2 p-2" style="background:#f0f7f4; border:1px solid #cfe8dc; border-radius:6px; font-size:0.85rem;">${parts.join('<br>')}</div>`;
+        }
+
         function targetStatusBadge(target) {
             const rel = target?.related;
             if (rel === 'dismissed') {
@@ -1607,6 +1723,8 @@
             return '<span class="badge bg-light text-dark border target-status-badge">Pending</span>';
         }
         window.targetStatusBadge = targetStatusBadge;
+        window.resolveAnnotator = resolveAnnotator;
+        window.formatAnnotatorBadge = formatAnnotatorBadge;
 
         function runRangeStorageKey() {
             const name = currentFilename
@@ -1746,25 +1864,18 @@
                 const statusBadge = targetStatusBadge(news);
                 const route = news.cascade_route || '';
                 const cmp = news.pipeline_compare || null;
+                const annotator = resolveAnnotator(news);
                 let badgeHtml = '';
-                if (route === 'llm_auto') {
-                    badgeHtml = `<span class="badge" style="background: #cfe2ff; color: #084298; border: 1px solid #b6d4fe; font-size: 0.75rem; padding: 4px 8px; border-radius: 6px; margin-left: 8px;"><i class="fas fa-brain me-1"></i>Qwen LLM</span>`;
-                } else if (route === 'v8_duo') {
-                    badgeHtml = `<span class="badge" style="background: #d1e7dd; color: #0f5132; border: 1px solid #badbcc; font-size: 0.75rem; padding: 4px 8px; border-radius: 6px; margin-left: 8px;"><i class="fas fa-layer-group me-1"></i>V8 Duo (${Math.round(conf*100)}%)</span>`;
-                } else if (route === 'v8_reranker') {
-                    badgeHtml = `<span class="badge" style="background: #e2d9f3; color: #432874; border: 1px solid #d2c4ef; font-size: 0.75rem; padding: 4px 8px; border-radius: 6px; margin-left: 8px;"><i class="fas fa-filter me-1"></i>V8 Reranker undet</span>`;
-                } else if (route === 'v8_qwen') {
-                    badgeHtml = `<span class="badge" style="background: #cfe2ff; color: #084298; border: 1px solid #b6d4fe; font-size: 0.75rem; padding: 4px 8px; border-radius: 6px; margin-left: 8px;"><i class="fas fa-brain me-1"></i>V8 → Qwen</span>`;
-                } else if (route === 'deberta_auto') {
-                    badgeHtml = `<span class="badge" style="background: #d1e7dd; color: #0f5132; border: 1px solid #badbcc; font-size: 0.75rem; padding: 4px 8px; border-radius: 6px; margin-left: 8px;"><i class="fas fa-robot me-1"></i>DeBERTa (High Conf: ${Math.round(conf*100)}%)</span>`;
-                } else if (route === 'deberta_ambiguous') {
-                    badgeHtml = `<span class="badge" style="background: #cff4fc; color: #055160; border: 1px solid #b6effb; font-size: 0.75rem; padding: 4px 8px; border-radius: 6px; margin-left: 8px;"><i class="fas fa-robot me-1"></i>DeBERTa (${Math.round(conf*100)}%)</span>`;
-                } else if (route === 'consensus') {
-                    badgeHtml = `<span class="badge" style="background: #cfe2ff; color: #084298; border: 1px solid #b6d4fe; font-size: 0.75rem; padding: 4px 8px; border-radius: 6px; margin-left: 8px;"><i class="fas fa-brain me-1"></i>LLM Consensus (Conf: ${Math.round(conf*100)}%)</span>`;
-                } else if (route === 'compare_agree' || route === 'compare_disagree') {
+                if (route === 'compare_agree' || route === 'compare_disagree') {
                     badgeHtml = formatPipelineCompareBadge(news);
+                    // Also show cascade-side annotator for Compare
+                    if (annotator && route === 'compare_agree') {
+                        badgeHtml += formatAnnotatorBadge(news);
+                    }
+                } else if (annotator) {
+                    badgeHtml = formatAnnotatorBadge(news);
                 } else if (route === 'human') {
-                    badgeHtml = `<span class="badge" style="background: #fff3cd; color: #664d03; border: 1px solid #ffecb5; font-size: 0.75rem; padding: 4px 8px; border-radius: 6px; margin-left: 8px;"><i class="fas fa-user-edit me-1"></i>Needs Review (Disagreement)</span>`;
+                    badgeHtml = `<span class="badge" style="background: #fff3cd; color: #664d03; border: 1px solid #ffecb5; font-size: 0.75rem; padding: 4px 8px; border-radius: 6px; margin-left: 8px;"><i class="fas fa-user-edit me-1"></i>Needs Review</span>`;
                 } else if (route === 'rejected') {
                     badgeHtml = `<span class="badge" style="background: #f8d7da; color: #842029; border: 1px solid #f5c2c7; font-size: 0.75rem; padding: 4px 8px; border-radius: 6px; margin-left: 8px;"><i class="fas fa-times-circle me-1"></i>Disagreement Rejected</span>`;
                 }
@@ -1779,11 +1890,13 @@
                 }
                 
                 let html = '';
+                const whoShort = annotator ? annotator.short : 'auto';
+                const whoLabel = annotator ? annotator.label : 'Confident prediction';
                 
                 if (isAutoHidden) {
                     html += `
                         <div id="collapsed-target-${i}" class="alert alert-success d-flex justify-content-between align-items-center mb-0" style="cursor: pointer; border-radius: 10px;" onclick="document.getElementById('collapsed-target-${i}').style.display='none'; document.getElementById('expanded-target-${i}').style.display='block';">
-                            <div><i class="fas fa-robot me-2"></i><b>Target ${i + 1}</b> : Confident prediction <b>${rel.toUpperCase()}</b> (${Math.round(conf*100)}%)</div>
+                            <div><i class="fas ${(annotator && annotator.icon) || 'fa-robot'} me-2"></i><b>Target ${i + 1}</b> : <b>${whoShort}</b> → <b>${rel.toUpperCase()}</b> (${Math.round(conf*100)}%) <span class="text-muted small">— ${whoLabel}</span></div>
                             <button class="btn btn-sm btn-outline-success">Review</button>
                         </div>
                     `;
@@ -1803,8 +1916,9 @@
                             <div><b>Metadata:</b> <pre style="background:#f8f9fa; border-radius:6px; padding:8px; overflow-x:auto;">${prettyMeta(news.metadata)}</pre></div>
                             <div class="mt-2 p-2" style="background:#e9ecef; border-radius:6px; font-family: monospace;">
                                 <b>Saved in JSON:</b> 
-                                ${rel ? `<span style="color:#055160;">"related": <b>"${rel}"</b>, "similarity_annotation": <b>${sim}</b></span>` : '<span class="text-muted"><i>None</i></span>'}
+                                ${rel ? `<span style="color:#055160;">"related": <b>"${rel}"</b>, "similarity_annotation": <b>${sim}</b>${news.annotated_by ? `, "annotated_by": <b>"${esc(news.annotated_by)}"</b>` : ''}</span>` : '<span class="text-muted"><i>None</i></span>'}
                             </div>
+                            ${formatCascadeDecisionDetail(news)}
                             ${cmp ? (() => {
                                 const q = cmp.qwen_only || {};
                                 const d = cmp.cascade || cmp.deberta_qwen || {};
