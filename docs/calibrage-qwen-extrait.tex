@@ -1,0 +1,22 @@
+\subsection*{Calibrage du LLM Qwen et protocole d'annotation}
+DeBERTa n'a pas été réentraîné\,: l'amélioration porte sur le pipeline LLM (prompt P3), le protocole métier et le mode de comparaison des modèles.
+Le prompt P3 est assemblé ainsi\,: \texttt{protocol.md} $\to$ few-shot $\to$ bloc HARD $\to$ paire $T_{\mathrm{ref}}/T_n$\,; le filet lexical et les seuils s'appliquent \emph{après} le LLM.
+
+\begin{itemize}
+    \item \textbf{Protocole consolidé :} un unique fichier \texttt{cascade/protocol.md} (version compacte, $\sim$2{,}2~ko) remplace les versions dispersées\,; il formalise l'échelle de similarité, le mapping score$\leftrightarrow$label et l'ordre de décision.
+          Ajouts récents\,: marque/thème partagé $\Rightarrow$ \emph{rarement} \texttt{not\_related} (sauf coïncidence)\,; sondages\,: dates/questions floues $\to$ \texttt{undetermined}, même enquête + \% incompatibles $\to$ \texttt{against}.
+
+    \item \textbf{Few-shot équilibré :} douze exemples maintenus en \textbf{3+3+3+3} (supporting, against, undetermined, not\_related) pour éviter un biais de classe dans le prompt (ex.\ Demiral / Jack Smith / Vance\,; Boissonnault / sex-ed\,; backpacks, sondages Biden, Starbucks\,; Mets vs Nationals, DWTS, fundraising vs météo).
+
+    \item \textbf{Bloc HARD (dans le prompt) :} rappel court après les few-shot\,: polarité (dont Vance)\,; fillers T4--T6 à mots faibles (\emph{here}/\emph{live}/\emph{since}) $\to$ \texttt{not\_related}\,; interdiction de forcer NR via une similarité artificielle à $0{,}1$\,; $\mathrm{sim}>0{,}3$ $\Rightarrow$ jamais NR.
+
+    \item \textbf{Garde-fous issus d'erreurs observées :} polarité $\neq$ against (paraphrase de suspension sportive\,; même événement + défense)\,; thème $\neq$ claim (sondages Biden 33\,\% vs 66\,\%)\,; interdiction d'abaisser artificiellement la similarité à $0{,}1$ pour forcer \texttt{not\_related} lorsqu'une marque, une entité ou un thème est partagé\,; fait + commentaire sur le même événement $\to$ supporting.
+          Pattern positionnel\,: faux NR fréquent sur \textbf{T1/T2}\,; trop d'\texttt{undetermined} sur \textbf{T4/T5/T6} (fillers / faux ponts lexicaux).
+
+    \item \textbf{Mode Compare :} exécution parallèle de Qwen seul et de la cascade (DeBERTa $\pm$ Qwen)\,; rapport automatique des accords/désaccords, des chronos et des motifs de divergence\,; correction UI pour comparer sur \texttt{llm\_pred} et éviter de faux désaccords. La revue humaine se concentre sur les désaccords.
+
+    \item \textbf{Boucle empirique de calibrage :} après réduction des \texttt{undetermined} trop ``mous'', une sur-correction a produit un excès de \texttt{not\_related} (y compris sur T1/T2 liés, ex.\ Starbucks, taxes sur les pourboires, lithium en Serbie). Correctifs\,: retrait d'un post-traitement agressif \texttt{undetermined}$\le 0{,}3\to$\texttt{not\_related}\,; rééquilibrage du prompt HARD\,; filet lexical post-LLM (pont marque/thème, acronymes type AI, fiches Forbes, synonymes, stopwords\,; plancher de similarité $\ge 0{,}35$ après correction)\,; seuils \texttt{score\_not\_related\_cutoff}$=0{,}2$ et \texttt{score\_not\_related\_max}$=0{,}3$.
+
+    \item \textbf{Résultats de campagnes Compare :} agrégat de plusieurs lots ($\sim$6\,800+ cibles, accords typiques 85--91\,\%).
+          Sur un lot d'environ 298 références (1788 cibles), accord Qwen/cascade $\sim$89\,\% (1584 accords / 204 désaccords)\,; la cascade reste nettement plus rapide (ex.\ $\sim$32~min vs $\sim$6~h~37 pour Qwen seul), DeBERTa tranchant $\sim$90\,\% des cibles sans appel LLM. L'analyse des désaccords indique que DeBERTa est souvent trop confiant en \texttt{supporting}/\texttt{against}, tandis que Qwen faute surtout sur la frontière \texttt{undetermined}/\texttt{not\_related} (soft undetermined vs faux \texttt{not\_related}).
+\end{itemize}

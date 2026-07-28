@@ -626,7 +626,7 @@
             <img src="{{ url_for('static', filename='logo.jpeg') }}" alt="Project Logo" class="logo" onerror="this.style.display='none'">
             <h1>News Annotation Tool</h1>
         </div>
-
+        
         <div class="row mb-4">
             <div class="col-md-5">
                 <div class="upload-section h-100">
@@ -681,10 +681,11 @@
                     <div class="d-flex align-items-center gap-2 mb-2 flex-wrap">
                         <input type="number" id="autoStart" class="form-control form-control-sm" placeholder="Start index" min="0" style="max-width:7rem;">
                         <input type="number" id="autoEnd" class="form-control form-control-sm" placeholder="End index" min="0" style="max-width:7rem;">
-                        <select id="cascadeMode" class="form-select form-select-sm" style="max-width:12rem;" title="Annotation pipeline">
+                        <select id="cascadeMode" class="form-select form-select-sm" style="max-width:14rem;" title="Annotation pipeline">
                             <option value="qwen_only">Qwen only</option>
                             <option value="deberta_qwen">DeBERTa + Qwen</option>
-                            <option value="compare">Compare both</option>
+                            <option value="v8_qwen">Cascade V8 + Qwen</option>
+                            <option value="compare">Compare Qwen ↔ Cascade V8</option>
                         </select>
                         <input type="number" id="autoThreshold" class="form-control form-control-sm" placeholder="τ" min="0" max="1" step="0.01" value="0.95" title="DeBERTa confidence threshold (DeBERTa + Qwen mode, default 0.95)" style="max-width:6rem;">
                         <button id="runAutoAnnotate" class="btn btn-primary btn-sm" style="white-space: nowrap;" disabled title="Checking configuration…"><i class="fas fa-robot me-1"></i>Run Model</button>
@@ -693,9 +694,10 @@
                         <strong><i class="fas fa-info-circle me-1"></i>How Run Model works</strong>
                         <ul class="mb-0 ps-3 mt-1">
                             <li><strong>Indices</strong> are 0-based reference positions in the JSON (not batch file numbers).</li>
-                            <li><strong>Pipeline</strong>: <em>Qwen only</em> (all targets → Qwen) ; <em>DeBERTa + Qwen</em> (cascade) ; <em>Compare both</em> runs both pipelines and reports agreements / disagreements.</li>
-                            <li><strong>Compare</strong>: if both pipelines agree → auto-annotate ; otherwise the target stays for review with Qwen vs Cascade details.</li>
-                            <li><strong>τ threshold</strong>: DeBERTa confidence in <em>DeBERTa + Qwen</em> and <em>Compare</em> modes (default 0.95).</li>
+                            <li><strong>Pipeline</strong>: <em>Qwen only</em> ; <em>DeBERTa + Qwen</em> (base) ; <em>Cascade V8 + Qwen</em> ; <em>Compare</em> = Qwen only vs Cascade V8+Qwen.</li>
+                            <li><strong>Cascade V8</strong>: Duo Zero Faute (accord + τ=0.98 / against specialist) → Reranker undetermined (≥0.70) → sinon Qwen P3 + post-LLM.</li>
+                            <li><strong>Compare</strong>: si les deux pipelines tombent sur le même label → auto-annotate ; sinon revue avec détail Qwen vs Cascade.</li>
+                            <li><strong>τ threshold</strong>: DeBERTa-base uniquement en mode <em>DeBERTa + Qwen</em> (ignoré pour V8 / Compare).</li>
                             <li><strong>Run Model</strong> resumes at the <em>first incomplete reference</em> and skips finished targets — unless you choose to overwrite.</li>
                             <li><strong>Re-annotate</strong>: if the range is partially or fully annotated, a confirmation modal asks whether to delete existing annotations and re-run.</li>
                             <li><strong>Disagreements</strong> (<code>human</code> / <code>rejected</code> routes) are not final — they are retried on the next run.</li>
@@ -932,33 +934,47 @@
                 delta_label: formatElapsedLabel(delta),
                 faster_label: fasterLabel,
                 pairs,
-                label: `Qwen seul ${formatElapsedLabel(qwen)} − Cascade (DeBERTa ${formatElapsedLabel(deberta)} + Qwen-cascade ${formatElapsedLabel(cascadeLlm)} = ${formatElapsedLabel(cascade)}) → Diff ${formatElapsedLabel(delta)} (${fasterLabel})`,
+                label: `Qwen seul ${formatElapsedLabel(qwen)} − Cascade V8 (${formatElapsedLabel(deberta)} modèles + ${formatElapsedLabel(cascadeLlm)} Qwen = ${formatElapsedLabel(cascade)}) → Diff ${formatElapsedLabel(delta)} (${fasterLabel})`,
             };
         }
 
         function cascadeSourceFromSide(cascadeSide, cmp) {
             const side = cascadeSide || {};
-            if (side.decision_source === 'deberta' || side.decision_source === 'qwen') {
+            if (side.decision_source === 'deberta' || side.decision_source === 'qwen' || side.decision_source === 'v8') {
                 return {
                     source: side.decision_source,
-                    label: side.decision_source_label || (side.decision_source === 'deberta' ? 'DeBERTa' : 'Qwen'),
+                    label: side.decision_source_label || (
+                        side.decision_source === 'qwen' ? 'Qwen'
+                        : side.decision_source === 'v8' ? 'V8'
+                        : 'DeBERTa'
+                    ),
                 };
             }
-            if (cmp?.cascade_source === 'deberta' || cmp?.cascade_source === 'qwen') {
+            if (cmp?.cascade_source === 'deberta' || cmp?.cascade_source === 'qwen' || cmp?.cascade_source === 'v8') {
                 return {
                     source: cmp.cascade_source,
-                    label: cmp.cascade_source_label || (cmp.cascade_source === 'deberta' ? 'DeBERTa' : 'Qwen'),
+                    label: cmp.cascade_source_label || (
+                        cmp.cascade_source === 'qwen' ? 'Qwen'
+                        : cmp.cascade_source === 'v8' ? 'V8'
+                        : 'DeBERTa'
+                    ),
                 };
             }
             const route = side.route;
+            if (route === 'v8_duo') return { source: 'v8', label: 'V8 Duo' };
+            if (route === 'v8_reranker') return { source: 'v8', label: 'V8 Reranker' };
+            if (route === 'v8_qwen') return { source: 'qwen', label: 'Qwen' };
             if (route === 'deberta_auto' || route === 'deberta_ambiguous') {
                 return { source: 'deberta', label: 'DeBERTa' };
             }
-            if (route === 'consensus') {
+            if (route === 'consensus' || route === 'llm_auto') {
                 return { source: 'qwen', label: 'Qwen' };
             }
-            if (side.llm_pred != null && route !== 'deberta_auto' && route !== 'deberta_ambiguous') {
+            if (side.llm_pred != null && route !== 'deberta_auto' && route !== 'deberta_ambiguous' && route !== 'v8_duo' && route !== 'v8_reranker') {
                 return { source: 'qwen', label: 'Qwen' };
+            }
+            if (side.v8_label != null || side.v8_stage) {
+                return { source: 'v8', label: 'V8' };
             }
             if (side.deberta_pred != null) {
                 return { source: 'deberta', label: 'DeBERTa' };
@@ -1098,10 +1114,17 @@
                     routingLine = `<div class="run-summary-routing mt-1"><strong>Compare</strong>: `
                         + `${agreePct}% agree (${agreeN}) · ${disagreePct}% disagree (${disagreeN}) — review disagreements manually</div>`;
                 } else {
+                const v8N = (stats.v8_duo || 0) + (stats.v8_reranker || 0);
                 const debertaN = (stats.deberta_auto || 0) + (stats.deberta_ambiguous || 0);
-                const qwenN = (stats.llm_auto || 0) + (stats.consensus || 0);
+                const qwenN = (stats.llm_auto || 0) + (stats.consensus || 0) + (stats.v8_qwen || 0);
                 const review = (stats.human || 0) + (stats.rejected || 0);
-                if (debertaN > 0) {
+                if (v8N > 0 || (stats.v8_qwen || 0) > 0) {
+                    const v8Pct = Math.round((v8N / routeTotal) * 100);
+                    const qwenPct = Math.round((qwenN / routeTotal) * 100);
+                    const reviewPct = Math.round((review / routeTotal) * 100);
+                    routingLine = `<div class="run-summary-routing mt-1"><strong>Routing V8</strong>: `
+                        + `${v8Pct}% Duo/Reranker (${v8N}) · ${qwenPct}% Qwen (${qwenN}) · ${reviewPct}% review (${review})</div>`;
+                } else if (debertaN > 0) {
                     const debertaPct = Math.round((debertaN / routeTotal) * 100);
                     const qwenPct = Math.round((qwenN / routeTotal) * 100);
                     const reviewPct = Math.round((review / routeTotal) * 100);
@@ -1130,16 +1153,16 @@
                 ? `<div class="run-summary-routing mt-1" style="background:#eef6ff;border:1px solid #cfe2ff;border-radius:8px;padding:0.45rem 0.65rem;">
                         <strong>Temps modèles (totaux)</strong>
                         <div class="mt-1"><b>1. Qwen seul</b>: ${compareTime.qwen_label || '—'}</div>
-                        <div class="mt-1"><b>2. Cascade</b> = DeBERTa + Qwen-cascade :
+                        <div class="mt-1"><b>2. Cascade V8 + Qwen</b> :
                           <b>${compareTime.cascade_label || '—'}</b>
                           <div class="small text-muted ms-2">
-                            DeBERTa: ${compareTime.cascade_deberta_label || '—'}
-                            (${compareTime.n_deberta_only ?? '—'} cibles sans LLM)
+                            Duo/Reranker: ${compareTime.cascade_deberta_label || '—'}
+                            (${compareTime.n_deberta_only ?? '—'} sans Qwen cascade)
                             + Qwen-cascade: ${compareTime.cascade_llm_label || '—'}
-                            (${compareTime.n_cascade_llm ?? '—'} cibles avec LLM)
+                            (${compareTime.n_cascade_llm ?? '—'} avec Qwen)
                           </div>
                         </div>
-                        <div class="mt-1"><b>Diff</b> (Qwen seul − Cascade DeBERTa+Qwen) :
+                        <div class="mt-1"><b>Diff</b> (Qwen seul − Cascade V8) :
                           <b>${compareTime.delta_label || '—'}</b>
                           — ${compareTime.faster_label || '—'}
                         </div>
@@ -1198,11 +1221,11 @@
             const mode = getCascadeMode();
             const thresholdInput = document.getElementById('autoThreshold');
             if (thresholdInput) {
-                const needsTau = mode === 'deberta_qwen' || mode === 'compare';
+                const needsTau = mode === 'deberta_qwen';
                 thresholdInput.disabled = !needsTau;
                 thresholdInput.title = needsTau
                     ? 'DeBERTa confidence threshold (default 0.95). Higher = fewer LLM calls.'
-                    : 'τ applies only in DeBERTa + Qwen or Compare mode.';
+                    : 'τ applies only in DeBERTa + Qwen mode (pas V8 / Compare).';
             }
         }
 
@@ -1329,7 +1352,7 @@
                     if (result.data) {
                         currentData = result.data;
                         processedIds = result.processed_ids || [];
-                        initializeUI();
+                    initializeUI();
                     }
                     if (typeof loadSessionsList === 'function') loadSessionsList();
                 } else if (st.error) {
@@ -1380,7 +1403,7 @@
             if (freshGb) {
                 installNote.textContent =
                     `Full install (first run): ~${freshGb} GB free disk space recommended.`;
-            } else {
+                } else {
                 installNote.textContent = '';
             }
 
@@ -1524,7 +1547,7 @@
         const cascadeModeEl = document.getElementById('cascadeMode');
         if (cascadeModeEl) {
             const savedMode = localStorage.getItem(CASCADE_MODE_KEY);
-            if (savedMode === 'qwen_only' || savedMode === 'deberta_qwen' || savedMode === 'compare') {
+            if (savedMode === 'qwen_only' || savedMode === 'deberta_qwen' || savedMode === 'v8_qwen' || savedMode === 'compare') {
                 cascadeModeEl.value = savedMode;
             }
             cascadeModeEl.addEventListener('change', () => {
@@ -1579,7 +1602,7 @@
                 return '<span class="badge bg-warning text-dark target-status-badge">Needs validation</span>';
             }
             if (isTargetAnnotatedLocal(target)) {
-                if (['llm_auto', 'deberta_auto', 'deberta_ambiguous', 'consensus', 'compare_agree'].includes(route)) {
+                if (['llm_auto', 'deberta_auto', 'deberta_ambiguous', 'consensus', 'compare_agree', 'v8_duo', 'v8_reranker', 'v8_qwen'].includes(route)) {
                     return '<span class="badge bg-success target-status-badge">Pre-filled (auto)</span>';
                 }
                 return '<span class="badge bg-primary target-status-badge">Manually annotated</span>';
@@ -1649,16 +1672,16 @@
             if (typeof applyRefFilter === 'function' && document.getElementById('refFilter')) {
                 applyRefFilter();
             } else {
-                select.innerHTML = '';
-                currentData.forEach((item, idx) => {
+            select.innerHTML = '';
+            currentData.forEach((item, idx) => {
                     const icon = statusIcon(item);
-                    const option = document.createElement('option');
-                    option.value = idx;
+                const option = document.createElement('option');
+                option.value = idx;
                     option.text = `[${idx}] ${icon} ${item.news.substring(0, 60)}...`;
-                    select.appendChild(option);
-                });
-                currentIndex = 0;
-                displayCurrentItem();
+                select.appendChild(option);
+            });
+            currentIndex = 0;
+            displayCurrentItem();
             }
             if (typeof updateCorpusStats === 'function') updateCorpusStats();
             if (typeof loadSessionsList === 'function') loadSessionsList();
@@ -1729,6 +1752,12 @@
                 let badgeHtml = '';
                 if (route === 'llm_auto') {
                     badgeHtml = `<span class="badge" style="background: #cfe2ff; color: #084298; border: 1px solid #b6d4fe; font-size: 0.75rem; padding: 4px 8px; border-radius: 6px; margin-left: 8px;"><i class="fas fa-brain me-1"></i>Qwen LLM</span>`;
+                } else if (route === 'v8_duo') {
+                    badgeHtml = `<span class="badge" style="background: #d1e7dd; color: #0f5132; border: 1px solid #badbcc; font-size: 0.75rem; padding: 4px 8px; border-radius: 6px; margin-left: 8px;"><i class="fas fa-layer-group me-1"></i>V8 Duo (${Math.round(conf*100)}%)</span>`;
+                } else if (route === 'v8_reranker') {
+                    badgeHtml = `<span class="badge" style="background: #e2d9f3; color: #432874; border: 1px solid #d2c4ef; font-size: 0.75rem; padding: 4px 8px; border-radius: 6px; margin-left: 8px;"><i class="fas fa-filter me-1"></i>V8 Reranker undet</span>`;
+                } else if (route === 'v8_qwen') {
+                    badgeHtml = `<span class="badge" style="background: #cfe2ff; color: #084298; border: 1px solid #b6d4fe; font-size: 0.75rem; padding: 4px 8px; border-radius: 6px; margin-left: 8px;"><i class="fas fa-brain me-1"></i>V8 → Qwen</span>`;
                 } else if (route === 'deberta_auto') {
                     badgeHtml = `<span class="badge" style="background: #d1e7dd; color: #0f5132; border: 1px solid #badbcc; font-size: 0.75rem; padding: 4px 8px; border-radius: 6px; margin-left: 8px;"><i class="fas fa-robot me-1"></i>DeBERTa (High Conf: ${Math.round(conf*100)}%)</span>`;
                 } else if (route === 'deberta_ambiguous') {
@@ -1776,24 +1805,24 @@
                             <div class="mb-2"><b>Target topic:</b> ${esc(news.topic || '')}</div>
                             <div><b>Metadata:</b> <pre style="background:#f8f9fa; border-radius:6px; padding:8px; overflow-x:auto;">${prettyMeta(news.metadata)}</pre></div>
                             <div class="mt-2 p-2" style="background:#e9ecef; border-radius:6px; font-family: monospace;">
-                                <b>Saved in JSON:</b>
+                                <b>Saved in JSON:</b> 
                                 ${rel ? `<span style="color:#055160;">"related": <b>"${rel}"</b>, "similarity_annotation": <b>${sim}</b></span>` : '<span class="text-muted"><i>None</i></span>'}
                             </div>
                             ${cmp ? (() => {
                                 const q = cmp.qwen_only || {};
-                                const d = cmp.deberta_qwen || {};
+                                const d = cmp.cascade || cmp.deberta_qwen || {};
                                 const qRel = q.related ?? '—';
                                 const qSim = (q.llm_sim ?? q.similarity_annotation ?? '—');
                                 const qRoute = q.route ?? '—';
                                 const qDuration = q.duration_s;
                                 const dRel = d.related ?? '—';
                                 const dRoute = d.route ?? '—';
-                                const dConf = (d.deberta_conf ?? d.llm_confidence ?? d.deberta_confidence ?? '—');
-                                const dDebertaPred = d.deberta_pred ?? '—';
-                                const llmSkipped = dRoute === 'deberta_auto' || dRoute === 'deberta_ambiguous';
+                                const dConf = (d.v8_conf ?? d.deberta_conf ?? d.llm_confidence ?? '—');
+                                const dStage = d.v8_stage || dRoute;
+                                const dRule = d.v8_rule || '—';
+                                const llmSkipped = dRoute === 'v8_duo' || dRoute === 'v8_reranker' || dRoute === 'deberta_auto' || dRoute === 'deberta_ambiguous';
                                 const dLlmPred = d.llm_pred ?? (llmSkipped ? 'non appelé' : '—');
                                 const dSim = d.llm_sim ?? d.similarity_annotation ?? d.deberta_sim ?? '—';
-                                const dSimLabel = d.llm_sim != null ? 'sim' : (d.similarity_annotation != null || d.deberta_sim != null ? 'sim (DeBERTa)' : 'sim');
                                 const dDuration = d.duration_s;
                                 const agree = !!cmp.agree;
                                 const bg = agree ? '#d1e7dd' : '#fff3cd';
@@ -1819,10 +1848,10 @@
                                 const dBadge = `Cascade (${dSource.label})`;
                                 return `
                                     <div class="mt-2 p-2" style="background:${bg}; border:1px solid ${border}; border-radius:6px;">
-                                        <b>Compare (détail)</b>
+                                        <b>Compare : Qwen only ↔ Cascade V8</b>
                                         <div class="small mt-1">
-                                            <div><span class="badge bg-primary">Qwen</span> route: <b>${qRoute}</b> · related: <b>${qRel}</b> · sim: <b>${qSim}</b> · durée: <b>${qDurStr}</b></div>
-                                            <div class="mt-1"><span class="badge ${agree ? 'bg-success' : 'bg-warning'}">${dBadge}</span> route: <b>${dRoute}</b> · related: <b>${dRel}</b> · DeBERTa: <b>${dDebertaPred}</b> (conf <b>${dConf}</b>) · LLM: <b>${dLlmPred}</b> · ${dSimLabel}: <b>${dSim}</b> · durée: <b>${dDurStr}</b>${llmSkipped && dRoute === 'deberta_ambiguous' ? ' <span class="text-muted">(Qwen réservé à supporting/undetermined)</span>' : ''}</div>
+                                            <div><span class="badge bg-primary">Qwen only</span> route: <b>${qRoute}</b> · related: <b>${qRel}</b> · sim: <b>${qSim}</b> · durée: <b>${qDurStr}</b></div>
+                                            <div class="mt-1"><span class="badge ${agree ? 'bg-success' : 'bg-warning'}">${dBadge}</span> route: <b>${dRoute}</b> · related: <b>${dRel}</b> · stage: <b>${dStage}</b> · rule: <b>${dRule}</b> · conf: <b>${dConf}</b> · LLM: <b>${dLlmPred}</b> · sim: <b>${dSim}</b> · durée: <b>${dDurStr}</b></div>
                                             ${speedLine}
                                         </div>
                                     </div>
@@ -1954,7 +1983,7 @@
                         if (typeof applyRefFilter === 'function' && document.getElementById('refFilter')?.value !== 'all') {
                             applyRefFilter();
                         } else {
-                            displayCurrentItem();
+                        displayCurrentItem();
                         }
                         window.scrollTo(0, 0);
                     } else {
@@ -2287,9 +2316,9 @@
                 if(response.ok) {
                     renderBatchSummary(result, false);
                     if (result.data) {
-                        currentData = result.data;
+                    currentData = result.data;
                         processedIds = result.processed_ids || [];
-                        initializeUI();
+                    initializeUI();
                     }
                 } else {
                     const partial = result.data && Array.isArray(result.data);

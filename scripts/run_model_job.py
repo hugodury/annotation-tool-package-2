@@ -134,6 +134,9 @@ KNOWN_ROUTES = (
     "consensus",
     "compare_agree",
     "compare_disagree",
+    "v8_duo",
+    "v8_reranker",
+    "v8_qwen",
     "human",
     "rejected",
 )
@@ -162,8 +165,8 @@ _TARGET_DONE = re.compile(
     r"TARGET DONE ref_index=\d+ ref=\d+/\d+ target=\d+/\d+ route=(\w+) duration=([\d.]+)s"
 )
 _BATCH_START_FILE = re.compile(r"BATCH START file=(.+?) indices=")
-LLM_ROUTES = ("llm_auto", "consensus", "human", "rejected")
-DEBERTA_ROUTES = ("deberta_auto", "deberta_ambiguous")
+LLM_ROUTES = ("llm_auto", "consensus", "v8_qwen", "human", "rejected")
+DEBERTA_ROUTES = ("deberta_auto", "deberta_ambiguous", "v8_duo", "v8_reranker")
 ESTIMATE_SAMPLE_MAX = 100
 CALIBRATION_VERSION = 2
 TPR_BUCKETS = (1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30, 40, 50, 75, 100)
@@ -861,7 +864,12 @@ def _resolve_two_bucket_estimate(
 ) -> dict[str, Any]:
     """Modele: n_llm = N * p_llm, n_deberta = N * p_deberta, temps = somme ponderee."""
     device_routes = (device_cal or {}).get("routes") or {}
-    from cascade.core import CASCADE_MODE_DEBERTA_QWEN, normalize_cascade_mode
+    from cascade.core import (
+        CASCADE_MODE_DEBERTA_QWEN,
+        CASCADE_MODE_V8_QWEN,
+        load_config,
+        normalize_cascade_mode,
+    )
 
     mode = normalize_cascade_mode(cascade_mode)
     sec_deberta, sec_llm = _default_bucket_secs(
@@ -871,6 +879,13 @@ def _resolve_two_bucket_estimate(
         llm_frac = _llm_fraction(CASCADE_ROUTE_FRACTIONS)
         if cpu_slow.get("llm_fraction") is not None:
             llm_frac = float(cpu_slow["llm_fraction"])
+    elif mode == CASCADE_MODE_V8_QWEN:
+        try:
+            llm_frac = float(
+                (load_config().get("cascade_v8") or {}).get("llm_fraction_estimate", 0.45)
+            )
+        except Exception:
+            llm_frac = 0.45
     else:
         llm_frac = 1.0
     deberta_frac = 1.0 - llm_frac
@@ -918,14 +933,24 @@ def _resolve_two_bucket_estimate(
         source = legacy_tb["source"]
         tier = legacy_tb["tier"]
 
-    # Qwen seul : 100 % LLM. DeBERTa+Qwen : repartition calibree ou theorique.
-    if mode == CASCADE_MODE_DEBERTA_QWEN:
+    # Qwen seul : 100 % LLM. DeBERTa+Qwen / V8 : repartition calibree ou theorique.
+    if mode in (CASCADE_MODE_DEBERTA_QWEN, CASCADE_MODE_V8_QWEN):
         n_llm = int(round(n_remaining * llm_frac))
         n_deberta = max(0, n_remaining - n_llm)
-        processing_sec = n_llm * sec_llm + n_deberta * sec_deberta
-        formula = (
-            f"{n_llm} Qwen x {sec_llm:.0f}s + {n_deberta} DeBERTa x {sec_deberta:.1f}s"
-        )
+        # V8 : chaque cible passe aussi par le duo (coût « deberta » ≈ duo+reranker)
+        v8_overhead = 1.8 if mode == CASCADE_MODE_V8_QWEN else 1.0
+        processing_sec = n_llm * sec_llm + n_deberta * sec_deberta * v8_overhead
+        if mode == CASCADE_MODE_V8_QWEN:
+            # Toutes les cibles paient le duo ; seule la fraction llm paie Qwen en plus
+            processing_sec = n_remaining * sec_deberta * v8_overhead + n_llm * sec_llm
+            formula = (
+                f"{n_remaining} V8-duo x {sec_deberta * v8_overhead:.1f}s "
+                f"+ {n_llm} Qwen x {sec_llm:.0f}s"
+            )
+        else:
+            formula = (
+                f"{n_llm} Qwen x {sec_llm:.0f}s + {n_deberta} DeBERTa x {sec_deberta:.1f}s"
+            )
     else:
         llm_frac = 1.0
         deberta_frac = 0.0
@@ -1903,6 +1928,7 @@ def _run_batch_inner(
             BatchCancelledError,
             CASCADE_MODE_COMPARE,
             CASCADE_MODE_DEBERTA_QWEN,
+            CASCADE_MODE_V8_QWEN,
             normalize_cascade_mode,
         )
 
@@ -1938,8 +1964,10 @@ def _run_batch_inner(
                 eng = app_mod.get_cascade_engine()
                 if is_cpu:
                     eng.cfg = cfg
-                if mode == CASCADE_MODE_DEBERTA_QWEN or mode == CASCADE_MODE_COMPARE:
+                if mode == CASCADE_MODE_DEBERTA_QWEN:
                     eng.ensure_deberta()
+                if mode == CASCADE_MODE_V8_QWEN or mode == CASCADE_MODE_COMPARE:
+                    eng.ensure_v8()
                 load_box["engine"] = eng
                 load_box["sbert"] = app_mod.get_sbert_model()
             except BaseException as e:
@@ -2002,6 +2030,9 @@ def _run_batch_inner(
             "consensus": 0,
             "compare_agree": 0,
             "compare_disagree": 0,
+            "v8_duo": 0,
+            "v8_reranker": 0,
+            "v8_qwen": 0,
             "rejected": 0,
             "human": 0,
         }
@@ -2144,7 +2175,7 @@ def _run_batch_inner(
                     message=(
                         f"Reference {ref_num}/{end_index - start_index + 1} — "
                         f"target {i + 1}/{len(targets)} ("
-                        f"{'Compare Qwen+Cascade' if mode == CASCADE_MODE_COMPARE else 'Cascade DeBERTa+Qwen' if mode == CASCADE_MODE_DEBERTA_QWEN else 'Qwen LLM'} running…)"
+                        f"{'Compare Qwen+Cascade' if mode == CASCADE_MODE_COMPARE else 'Cascade V8+Qwen' if mode == CASCADE_MODE_V8_QWEN else 'Cascade DeBERTa+Qwen' if mode == CASCADE_MODE_DEBERTA_QWEN else 'Qwen LLM'} running…)"
                     ),
                 )
                 logger.info(
@@ -2183,6 +2214,17 @@ def _run_batch_inner(
 
                 route_name = out["route"]
                 target["cascade_route"] = route_name
+                if out.get("v8_stage") or out.get("v8_rule"):
+                    target["cascade_v8"] = {
+                        "status": out.get("v8_status"),
+                        "stage": out.get("v8_stage"),
+                        "rule": out.get("v8_rule"),
+                        "label": out.get("v8_label"),
+                        "confidence": out.get("v8_conf"),
+                        "minilm": out.get("v8_minilm_label"),
+                        "deberta": out.get("v8_deberta_label"),
+                        "reranker_undet": out.get("v8_reranker_undet_prob"),
+                    }
                 if out.get("pipeline_compare"):
                     target["pipeline_compare"] = out["pipeline_compare"]
                     cmp = out["pipeline_compare"]
@@ -2231,18 +2273,23 @@ def _run_batch_inner(
                     "deberta_ambiguous",
                     "consensus",
                     "compare_agree",
+                    "v8_duo",
+                    "v8_reranker",
+                    "v8_qwen",
                 }:
                     target["related"] = out["related"]
                     conf = (
                         out["llm_conf"]
-                        if route_name in {"consensus", "llm_auto"}
-                        else out["deberta_conf"]
+                        if route_name in {"consensus", "llm_auto", "v8_qwen"}
+                        else out.get("v8_conf") or out["deberta_conf"]
                     )
                     target["model_confidence"] = (
                         round(conf, 4) if conf is not None else None
                     )
-                    if route_name == "consensus":
+                    if route_name in {"consensus", "v8_qwen"}:
                         target["similarity_annotation"] = round(out["llm_sim"], 4)
+                    elif route_name in {"v8_duo", "v8_reranker"}:
+                        target["similarity_annotation"] = out.get("similarity_annotation")
                     else:
                         if _abort_cancelled():
                             return

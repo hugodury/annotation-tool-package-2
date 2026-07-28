@@ -1,7 +1,7 @@
 # ISIALAB Annotation Interface
 
-Application web Flask pour l'annotation VLDBench avec **cascade automatique** :
-**DeBERTa-v3** → **LLM local (Qwen 7B via Ollama)** → revue humaine.
+Application web Flask pour l'annotation VLDBench avec **pipelines d'annotation automatique** :
+**Qwen only**, **DeBERTa-base + Qwen**, **Cascade V8 + Qwen** (MiniLM + DeBERTa Large + Reranker → Qwen), et **Compare** (Qwen only ↔ Cascade V8).
 
 Interface web **entièrement en anglais**. Fonctionne sur **Windows, macOS et Linux** via un setup unifié (`start.sh` / `start.bat` / `start.ps1`), ou via **Docker**.
 
@@ -9,6 +9,7 @@ Interface web **entièrement en anglais**. Fonctionne sur **Windows, macOS et Li
 |-----------|------|
 | **Dépôt GitHub** | https://github.com/hugodury/annotation-tool-package-2 |
 | **Release modèles ML (v1.0.0)** | https://github.com/hugodury/annotation-tool-package-2/releases/tag/v1.0.0 |
+| **Workspace modèles / cascade CLI** | https://github.com/Cespriet/AI_annotation |
 
 ```bash
 git clone https://github.com/hugodury/annotation-tool-package-2.git
@@ -30,7 +31,20 @@ cd annotation-tool-package-2
 
 Ouvrir **http://127.0.0.1:5000**
 
-> Après modification du code HTML/JS/Python, **redémarrer Flask** (`./start.sh`) si le serveur tournait déjà — les templates sont rechargés automatiquement au prochain démarrage (`TEMPLATES_AUTO_RELOAD`).
+> Après modification du code HTML/JS/Python, **redémarrer Flask** si le serveur tournait déjà.
+
+---
+
+## Modes Run Model
+
+| Mode UI | Comportement |
+|---------|--------------|
+| **Qwen only** | Chaque cible → Qwen P3 + post-LLM |
+| **DeBERTa + Qwen** | DeBERTa-base (≥ τ auto) ; sinon Qwen sur supporting/undetermined |
+| **Cascade V8 + Qwen** | Duo MiniLM+DeBERTa Large → Reranker undetermined → sinon Qwen P3 |
+| **Compare Qwen ↔ Cascade V8** | Lance les deux pipelines ; accord → auto ; désaccord → revue |
+
+Détail des règles V8 : [`cascade/CASCADE_RULES.md`](cascade/CASCADE_RULES.md).
 
 ---
 
@@ -40,68 +54,93 @@ Ouvrir **http://127.0.0.1:5000**
 |---------|--------|
 | Python | 3.9+ (3.12+ recommandé) — [python.org](https://www.python.org/downloads/) |
 | Ollama | [ollama.com](https://ollama.com/) |
-| RAM | 10 Go recommandés (Qwen 7B) |
+| RAM | 10 Go recommandés (Qwen 7B) ; + marge pour Cascade V8 (~4 Go de poids locaux) |
 | Disque (1er lancement) | **~13 Go libres** (venv, modèles ML ~1,5 Go, LLM ~4 Go, marge) |
-| Disque (une fois installé) | **~8 Go** au total |
+| Disque (une fois installé) | **~8 Go** au total (+ ~4 Go si Cascade V8 installée à côté) |
 
 Le script de démarrage installe le reste : venv, PyTorch (CPU / CUDA / MPS), modèles ML, pull Qwen via Ollama.
 
+### Cascade V8 (MiniLM + DeBERTa Large + Reranker)
+
+Les poids V8 (~4 Go) **ne sont pas** dans ce dépôt Git. Ils vivent dans le workspace
+[`AI_annotation`](https://github.com/Cespriet/AI_annotation) sous
+`cascade_annotation_v8_complete/` (ou variable d'environnement `CASCADE_V8_ROOT`).
+
+Lien attendu par l'app :
+
+```text
+annotation-tool-package-2/models/cascade_v8
+  → …/AI_annotation/cascade_annotation_v8_complete/cascade_annotation_v8_complete
+```
+
+Sans ce lien, le mode **Cascade V8 + Qwen** / **Compare** échoue au chargement des modèles.
+
 ### Sélecteurs système (Browse / Choose JSON)
 
-Les boutons **Browse** (dossier de stockage) et **Choose JSON file** ouvrent le **sélecteur natif** de l'OS, avec repli automatique :
-
-| OS | Dossier | Fichier JSON |
-|----|---------|--------------|
-| **Linux** | zenity → kdialog → yad → tkinter | idem |
-| **macOS** | Finder (osascript) → tkinter | idem |
-| **Windows** | PowerShell / pwsh → tkinter | idem |
-
-Sur Linux, une session bureau (`DISPLAY` ou `WAYLAND_DISPLAY`) est requise. L'app vérifie la disponibilité via `GET /api/dialogs/capabilities`.
+Les boutons **Browse** et **Choose JSON file** ouvrent le **sélecteur natif** de l'OS
+(zenity / Finder / PowerShell, avec repli tkinter).
 
 ---
 
 ## Checklist configuration (interface web)
 
-Au chargement, une checklist (en anglais) vérifie **7 prérequis obligatoires** :
-
-- Python, PyTorch, sentence-transformers ≥ 5.5
-- ML models (DeBERTa, SBERT, cross-encoder)
-- Ollama installed & running
-- LLM `qwen2.5:7b-instruct` downloaded
-
-**Run Model** n'est disponible que si tous ces points sont ✓ (bouton désactivé + blocage API sinon).
-RAM, GPU et performance estimée sont informatifs seulement.
-
-Ollama et le LLM se préparent en arrière-plan (`/api/ensure-ollama`).
+Au chargement, une checklist vérifie Python, PyTorch, sentence-transformers, modèles ML,
+Ollama et le LLM `qwen2.5:7b-instruct`. **Run Model** n'est disponible que si tout est ✓.
 
 ---
 
 ## Routage cascade
 
+### Cascade V8 + Qwen (`v8_qwen`)
+
+```text
+Pair (T_ref, T_n)
+  │
+  ├─ Duo MiniLM (0.4) + DeBERTa Large (0.6)
+  │     Rule 5 disagree → reject
+  │     Rule 1 P(against)>0.35 → AUTO against          (route v8_duo)
+  │     Rule 2 P(undet)>0.10 → reject
+  │     Rule 3 max P≥0.98 → AUTO                       (route v8_duo)
+  │     Rule 4 sinon → reject
+  │
+  ├─ Reranker undetermined (si reject)
+  │     P≥0.70 → AUTO undetermined                     (route v8_reranker)
+  │
+  └─ sinon → Qwen P3 + post-LLM                        (route v8_qwen)
+```
+
+DeBERTa Large tourne en **CPU** (NaNs observés sur GPU/MPS).
+
+### DeBERTa-base + Qwen (`deberta_qwen`)
+
 | Situation | Route | Comportement |
 |-----------|-------|--------------|
-| DeBERTa confiant (≥ τ, défaut 95 %) | `deberta_auto` | Annotation automatique + similarité SBERT |
+| DeBERTa confiant (≥ τ, défaut 95 %) | `deberta_auto` | Annotation automatique |
 | Classe `against` / `not_related` ambiguë | `deberta_ambiguous` | DeBERTa seul |
-| Classe `supporting` / `undetermined` ambiguë | `consensus` ou `human` | LLM Qwen (prompt P3) puis consensus ou revue |
-| Désaccord fort DeBERTa / LLM (conf. ≥ 85 %) | `rejected` | Rejet — revue humaine |
-| Désaccord modéré | `human` | Flag revue humaine |
-| Timeout / erreur LLM | `human` | Revue humaine, le batch continue |
+| Classe `supporting` / `undetermined` ambiguë | `consensus` / `human` | LLM Qwen (P3) |
+| Désaccord fort (≥ 85 %) | `rejected` | Revue humaine |
+| Timeout / erreur LLM | `human` | Revue humaine |
 
-Seuil τ réglable dans l'interface (défaut `0.95`).
+Seuil τ réglable dans l'UI — **uniquement** pour ce mode.
 
-**Important** : les routes `human` / `rejected` **ne produisent pas** d'annotation finale (`related` + `similarity_annotation`) — elles sont **retentées** au prochain Run Model tant qu'elles ne sont pas validées manuellement.
+### Compare (`compare`)
+
+Exécute **Qwen only** et **Cascade V8 + Qwen** en parallèle :
+
+- même label → `compare_agree` (auto-annotation)
+- labels différents → `compare_disagree` (revue + détail)
+
+Les routes `human` / `rejected` / `compare_disagree` **ne finalisent pas** l'annotation ;
+elles sont retentées au prochain Run Model.
 
 ---
 
-## Modèles ML (DeBERTa, SBERT, cross-encoder)
+## Modèles ML (DeBERTa-base, SBERT, cross-encoder)
 
-Les poids fine-tunés (~1,5 Go) ne sont **pas** dans Git.
+Les poids fine-tunés (~1,5 Go) ne sont **pas** dans Git. Au premier lancement,
+`scripts/setup.py` les télécharge depuis la
+[Release GitHub v1.0.0](https://github.com/hugodury/annotation-tool-package-2/releases/tag/v1.0.0).
 
-Au premier lancement, `scripts/setup.py` les télécharge depuis la
-[Release GitHub v1.0.0](https://github.com/hugodury/annotation-tool-package-2/releases/tag/v1.0.0)
-(archive `vldbench-models-v1.tar.gz`).
-
-Sans release accessible :
 ```bash
 export MODELS_DOWNLOAD_URL=https://votre-hebergeur/vldbench-models-v1.tar.gz
 ```
@@ -116,199 +155,49 @@ Modèle par défaut : **Qwen2.5-7B** (`qwen2.5:7b-instruct`).
 OLLAMA_LLM_MODEL=mon-modele:tag ./start.sh
 ```
 
-Variables optionnelles : `.env.example` → `.env` (`OLLAMA_HOST`, `OLLAMA_LLM_MODEL`, `ANNOTATION_DATA_DIR`, etc.).
+Variables optionnelles : `.env.example` → `.env`
+(`OLLAMA_HOST`, `OLLAMA_LLM_MODEL`, `ANNOTATION_DATA_DIR`, `CASCADE_V8_ROOT`, …).
 
-### Timeouts, retries et mode CPU lent
-
-Configurés dans `cascade/config.json` :
-
-| Paramètre | Valeur | Rôle |
-|-----------|--------|------|
-| `inference.timeout` | 600 s | Temps max par appel LLM |
-| `inference.llm_retries` | 2 | Retries Ollama |
-| `inference.keep_alive` | 30 min | Qwen en RAM entre appels |
-| `run_model.no_annotation_timeout` | 360 s | Arrêt si aucune cible annotée |
-| `run_model.save_every_n_refs` | 3 | Checkpoint JSON + DB tous les N refs |
-| `run_model.cpu_slow.*` | — | Timeouts allongés sur CPU |
-| `run_model.estimate.*` | — | Estimation durée (matériel, fractions route, calibration) |
-
-Sur CPU, les cibles LLM peuvent prendre **15–45 s** selon la machine — la barre affiche « running » pendant ce délai.
-
-#### Estimation du temps Run Model
-
-L'estimation utilise un **modèle deux buckets** (Qwen / DeBERTa) calibré par machine :
-
-```
-temps ≈ démarrage + (n_Qwen × sec_Qwen) + (n_DeBERTa × sec_DeBERTa) + (refs × 0,15 s)
-n_Qwen = N × %_Qwen    |    n_DeBERTa = N × %_DeBERTa
-```
-
-| Tier | Quand | % Qwen / DeBERTa | Temps par appel |
-|------|-------|------------------|-----------------|
-| **`theorique`** | **1er lancement** sur un fichier (aucun batch terminé dessus) | Répartition **théorique** de la config (~12 % / 88 %) | **Calibration machine** (`device_global` dans `instance/estimate_calibration.json`) si disponible, sinon défauts CPU/GPU |
-| **`fichier`** | Après 1+ batch **terminé sur le même fichier** | % **mesurés** lors des batches réels | Médianes **mesurées** sur ce fichier / machine |
-
-**Important** :
-- **Aucune sonde DeBERTa** au 1er lancement — l'estimation est **instantanée** dès la saisie Start/End.
-- La calibration machine (`device_global`) s'enrichit après **chaque batch** sur n'importe quel fichier (DeBERTa ~0,3 s, Qwen ~15 s sur CPU typique).
-- Sur une installation neuve sans batch passé, seuls les défauts `run_model.estimate.cpu_slow` s'appliquent (plus conservateurs).
-
-**Affichage UI** (sous Start/End) :
-
-```
-Indices 1132–1136: estimated time ~1 min 9 s (4 Qwen x 15s + 26 DeBERTa x 0.3s (12% / 88%))
-```
-
-Après batch terminé, le résumé affiche la durée réelle + % DeBERTa / % LLM mesurés.
-
-**API** : `POST /api/auto_annotate/estimate` — retourne `calibration_tier`, `estimate_formula`, `estimated_label`.
-
-Paramètres clés dans `cascade/config.json` :
-
-| Clé | Rôle |
-|-----|------|
-| `model_load_sec_cpu` / `model_load_sec_gpu` | 1er batch (chargement modèles) |
-| `model_load_sec_warm` | Batches suivants (modèles déjà en RAM) |
-| `route_fractions` | Répartition théorique DeBERTa / LLM (1er lancement) |
-| `route_sec_cpu` / `route_sec_gpu` | Durée par route — repli si pas encore calibré |
-| `run_model.estimate.cpu_slow` | Défauts CPU (`sec_deberta`, `sec_llm`) avant calibration |
+Timeouts / retries / estimation : `cascade/config.json`
+(`inference.*`, `run_model.*`, `cascade_v8.*`).
 
 ---
 
 ## Utilisation
 
-### 1. Charger un corpus
+1. **Charger un corpus** (Browse / Choose JSON / Saved sessions)
+2. Checklist **All set**
+3. **Run Model** : indices 0-based + mode pipeline (+ τ si DeBERTa-base)
+4. Annotation manuelle : filtres, Next review, Save / Dismiss
 
-- **Browse** : ouvre le sélecteur système pour choisir le **dossier de stockage** (où sont enregistrés les nouveaux JSON)
-- **Choose JSON file** : ouvre le sélecteur système pour ouvrir un JSON **à son emplacement réel** sur le disque (pas de copie forcée)
-- **Storage folder** : chemin affiché ; verrouillable via `ANNOTATION_DATA_DIR` dans `.env`
-- **Saved sessions** : registre des fichiers ouverts ou utilisés avec Run Model (`instance/saved_sessions.json`) — **indépendant** du dossier de stockage
-- **Active file** : fichier courant en haut du panneau gauche
-- **Download JSON** : export du fichier actif
-
-#### Sessions sauvegardées
-
-Chaque fichier JSON **choisi** ou **traité par Run Model** est ajouté au registre. La liste reste visible même après changement de dossier de stockage.
-
-Clic sur **×** : modal avec 3 choix :
-
-| Action | Effet |
-|--------|-------|
-| **Liste seulement** | Retire l'entrée du registre — le fichier **reste sur l'ordinateur** |
-| **Supprimer de l'ordinateur** | Efface définitivement le fichier du disque (+ cache SQLite associé) |
-| **Annuler** | Ne rien faire |
-
-### 2. Vérifier la configuration
-
-Badge **All set** requis avant **Run Model**.
-
-### 3. Run Model (annotation automatique)
-
-Bloc d'aide intégré **« How Run Model works »** sous les champs d'index.
-
-1. Indiquer **Start index** et **End index** (positions **0-based** dans le JSON, pas les numéros de batch)
-2. Optionnel : ajuster **τ** (défaut 0,95)
-3. Cliquer **Run Model** — batch **asynchrone** (HTTP 202)
-4. La plage d'indices est **mémorisée par fichier** (persiste après batch / rechargement page)
-5. **Run Model reprend automatiquement** à la première référence incomplète de la plage (plus de bouton « Continuer » séparé)
-6. **Estimation** sous les indices : formule deux buckets (Qwen × sec + DeBERTa × sec) + durée totale ; disparaît pendant/après le batch ; résumé avec routing à la fin
-7. **Annuler** / **View logs** depuis l'overlay de progression
-
-#### Comportement skip / re-annotation
-
-| Situation | Comportement |
-|-----------|--------------|
-| Cible déjà annotée (`related` + score, ou `dismissed`) | Ignorée |
-| Cible `human` / `rejected` (pas d'annotation finale) | Retraitée |
-| Plage partiellement annotée | Confirmation : ré-annoter (écraser) **ou** compléter les cibles vides seulement |
-| Plage 100 % annotée | Confirmation obligatoire pour **ré-annoter** (`force_reannotate: true`) |
-
-#### Annulation
-
-- `POST /api/auto_annotate/cancel` — interruptible (LLM streaming, DeBERTa, chargement modèles)
-- Sauvegarde partielle JSON + checkpoint SQLite
-- Résumé anglais à la fin (ou partiel si annulé)
-
-### 4. Annotation manuelle
-
-- Navigation **Previous / Next** + liste de références
-- **Filtre** : All, Pending, Partial, Complete, Needs validation
-- **Next review** : saute aux désaccords `human` / `rejected`
-- **Badges cibles** : Pre-filled (auto), Manually annotated, Needs validation, Pending
-- **Save & next** / **Dismiss & next**
-
-### 5. Maintenance
-
-- **Clear processing cache (SQLite)** : vide le cache local **sans** supprimer les JSON sur le disque
-- **Clear Run Model logs** : vide le log de la session serveur courante (`run_model_session.log`)
-
-Protocole (P3) : `cascade/protocol.md`
+Protocole P3 : `cascade/protocol.md` · Few-shot : `cascade/few_shot.json`
 
 ---
 
-## Où sont stockées les données ?
+## Données
 
 | Emplacement | Rôle |
 |-------------|------|
-| Dossier configurable | UI **Browse** ou variable `ANNOTATION_DATA_DIR` (défaut : `uploads/`) |
-| JSON sur le disque | **Source de vérité** — peuvent être hors du dossier de stockage |
-| `instance/saved_sessions.json` | Registre des sessions (chemins absolus, dernière utilisation) |
-| `instance/estimate_calibration.json` | Calibration v2 : temps machine (`device_global`) + stats par fichier (`two_bucket`) |
-| `{storage}/backups/` | Backup auto avant chaque Run Model |
-| `instance/annotations.db` | Cache SQLite (statuts UI) |
-| `logs/run_model_session.log` | Log Run Model — **réinitialisé à chaque redémarrage** du serveur |
+| `ANNOTATION_DATA_DIR` / `uploads/` | Stockage JSON |
+| `instance/saved_sessions.json` | Registre sessions |
+| `instance/estimate_calibration.json` | Calibration estimation |
+| `instance/annotations.db` | Cache SQLite |
+| `logs/run_model_session.log` | Log Run Model |
 
-Champs cascade par cible : `related`, `similarity_annotation`, `cascade_route`, `model_confidence` (+ `llm_pred` / `llm_error` si applicable).
-
----
-
-## Robustesse
-
-- Verrous fichier JSON (`scripts/annotation_store.py`)
-- Sauvegarde incrémentale (checkpoint tous les N refs)
-- Skip refs complètes et cibles déjà annotées
-- Ré-annotation forcée avec confirmation (`force_reannotate`)
-- Backup auto avant batch
-- Parsing LLM robuste + retries Ollama
-- Annulation interruptible (streaming)
-- Progression temps réel (polling `/api/auto_annotate/status` toutes les 2 s)
-- Reprise overlay si batch en cours au rechargement page
-- Chemins sessions sans altération des noms (`_safe_upload_path` — espaces, parenthèses)
-- Estimation deux buckets : théorique au 1er lancer (config + machine), mesurée après batch sur le même fichier
-- Sélecteurs système cross-platform avec messages d'erreur explicites
+Champs par cible : `related`, `similarity_annotation`, `cascade_route`,
+`model_confidence`, éventuellement `cascade_v8` / `pipeline_compare`.
 
 ---
 
-## API
+## API (extrait)
 
 | Méthode | Route | Description |
 |---------|-------|-------------|
-| GET | `/` | Interface web (anglais) |
-| GET | `/api/health` | Healthcheck Docker |
-| GET | `/api/status` | Checklist configuration |
-| POST | `/api/ensure-ollama` | Prépare Ollama + LLM (async) |
-| GET | `/api/system-check` | Alias diagnostic |
-| POST | `/upload` | Upload JSON (multipart) |
-| POST | `/api/upload/pick` | Sélecteur système — ouvre un JSON |
-| GET | `/resume` | Dernière session dans le dossier de stockage |
-| GET | `/download` | Télécharge le JSON actif |
-| POST | `/save_annotation` | Sauvegarde manuelle |
-| POST | `/clear_database` | Vide le cache SQLite |
-| GET | `/api/sessions` | Liste des sessions sauvegardées |
-| POST | `/api/sessions/load` | Charge une session par chemin |
-| POST | `/api/sessions/delete` | Retire du registre (`mode: "list"`) ou supprime du disque (`mode: "disk"`) |
-| POST | `/api/resync` | Resync SQLite ← JSON |
-| GET | `/api/storage` | Dossier de stockage actuel |
-| POST | `/api/storage` | Changer le dossier (`{ "path": "/abs/path" }`) |
-| POST | `/api/storage/pick` | Sélecteur système — choisir le dossier de stockage |
-| GET | `/api/dialogs/capabilities` | Sélecteurs natifs disponibles sur la machine |
-| POST | `/auto_annotate` | Lance Run Model (202, `force_reannotate` optionnel) |
-| GET | `/api/auto_annotate/status` | Progression du batch |
-| POST | `/api/auto_annotate/estimate` | Estimation durée pour une plage d'indices |
-| GET | `/api/auto_annotate/resume` | Index de reprise dans une plage |
-| POST | `/api/auto_annotate/cancel` | Annulation interruptible |
-| GET | `/api/logs/run_model/latest` | Tail du log Run Model |
-| POST | `/api/logs/clear` | Vide le log de la session serveur |
+| POST | `/auto_annotate` | Lance Run Model (`cascade_mode`, `force_reannotate`) |
+| GET | `/api/auto_annotate/status` | Progression |
+| POST | `/api/auto_annotate/estimate` | Estimation durée |
+| POST | `/api/auto_annotate/cancel` | Annulation |
+| GET | `/api/status` | Checklist |
 
 ---
 
@@ -318,61 +207,24 @@ Champs cascade par cible : `related`, `similarity_annotation`, `cascade_route`, 
 docker compose up --build
 ```
 
-Services : `app` (5000) + `ollama` (11434). Volumes : `./models`, `./uploads`, `./logs`.
-
 Voir **[DEPLOYMENT.md](DEPLOYMENT.md)**.
 
 ---
 
-## Dépannage rapide
-
-```bash
-python scripts/system_check.py
-python scripts/disk_check.py
-./start.sh
-```
-
-| Problème | Solution |
-|----------|----------|
-| Interface en français / ancienne version | Redémarrer Flask + **Ctrl+Shift+R** dans le navigateur |
-| Browse / Choose JSON ne s'ouvre pas (Linux) | Installer `zenity`, `kdialog` ou `yad` ; vérifier `DISPLAY` / `WAYLAND_DISPLAY` |
-| Browse / Choose JSON ne s'ouvre pas (Windows) | Installer PowerShell ou `pwsh` ; Python avec tkinter |
-| Sessions sauvegardées vides | Choisir un JSON ou lancer Run Model — la liste se remplit automatiquement |
-| Sessions disparaissent après changement de dossier | Corrigé — le registre est indépendant du dossier de stockage |
-| Progression 0/0 | Redémarrer Flask (`./start.sh`) |
-| Compteur lent sur 0/N | Normal pendant un appel LLM ; barre « running » |
-| Run Model indisponible | Compléter la checklist (ML models, Ollama, Qwen) |
-| Indices remis à 0–fin après batch | Recharger après mise à jour — plage mémorisée par fichier |
-| Session introuvable (parenthèses dans le nom) | Corrigé via `_safe_upload_path` |
-| Batch timeout après 1 cible sur CPU | Corrigé (`pairs_evaluated` + timeout CPU 900 s) |
-| Annuler sans effet | Attendre ~10 s (streaming LLM) ou recharger la page |
-| Batch interrompu | Partiel sauvegardé ; relancer **Run Model** (reprise auto) |
-| Estimation trop basse au 1er lancer (~11 s pour 30 cibles) | Corrigé — modèle deux buckets : 12 % Qwen × sec machine (~15 s) + 88 % DeBERTa × ~0,3 s |
-| Estimation affichée après batch | Changer Start/End pour la réafficher ; le résumé routing reste sous le batch |
-| Logs anciens après redémarrage | Comportement normal — un seul log par session serveur |
-
----
-
-## Structure du projet
+## Structure
 
 ```
 annotation-tool-package-2/
-├── app.py                    # Flask, routes, SQLAlchemy, registre sessions
-├── cascade/                  # Moteur cascade (DeBERTa + LLM)
-├── scripts/
-│   ├── setup.py
-│   ├── run_model_job.py      # Batch async, logs session, estimation
-│   ├── annotation_store.py   # Verrous, backups, validation indices
-│   ├── native_dialogs.py     # Sélecteurs système (Linux / macOS / Windows)
-│   ├── session_discovery.py  # Utilitaire scan disque (optionnel)
-│   ├── system_check.py       # Checklist (labels anglais)
-│   └── ollama_service.py
-├── templates/index.html      # UI anglaise
-├── static/app_extras.js      # Sessions, filtres, toasts, sélecteurs
-├── uploads/                  # Dossier de stockage par défaut (non versionné)
-├── logs/                     # run_model_session.log (non versionné)
-├── instance/                 # SQLite + saved_sessions.json (non versionné)
-├── models/                   # Poids ML (Release GitHub)
+├── app.py
+├── cascade/
+│   ├── core.py              # modes qwen_only / deberta_qwen / v8_qwen / compare
+│   ├── v8_predictor.py      # Duo Zero Faute + Reranker
+│   ├── CASCADE_RULES.md
+│   ├── protocol.md / few_shot.json / config.json
+│   └── post_llm_regles.txt
+├── scripts/run_model_job.py
+├── templates/index.html
+├── models/                  # Release ML + symlink cascade_v8
 └── start.sh / start.bat / start.ps1
 ```
 
@@ -380,6 +232,7 @@ annotation-tool-package-2/
 
 ## Documentation
 
-- **[DEPLOYMENT.md](DEPLOYMENT.md)** — Docker, modèles, dépannage avancé
+- **[DEPLOYMENT.md](DEPLOYMENT.md)** — Docker, modèles, dépannage
+- **[cascade/CASCADE_RULES.md](cascade/CASCADE_RULES.md)** — règles Duo / Reranker / Qwen
 - **Release modèles** — https://github.com/hugodury/annotation-tool-package-2/releases/tag/v1.0.0
-- **[AI_annotation](https://github.com/Cespriet/AI_annotation)** — entraînement, évaluation, cascade CLI
+- **[AI_annotation](https://github.com/Cespriet/AI_annotation)** — entraînement, évaluation, package Cascade V8

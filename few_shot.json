@@ -2,21 +2,33 @@
   "examples": [
     {
       "related": "supporting",
-      "similarity_annotation": 0.8,
-      "text_anchor": "[Topic: Sports] [Date: 2024-07-03] UEFA hands Turkey defender Merih Demiral two-match suspension after celebration - Reuters",
-      "text_target": "[Topic: Sports] [Date: 2024-07-03] Demiral suspended for 2 games by UEFA - AP"
+      "similarity_annotation": 0.85,
+      "text_anchor": "[Topic: Politics] [Date: 2024-08-26] U.S. special counsel appeals to revive Trump classified documents case - Global News Toronto",
+      "text_target": "[Topic: Politics] [Date: 2024-07-17] Special counsel appeals dismissal of Trump classified documents case - CNN"
     },
     {
       "related": "against",
-      "similarity_annotation": 0.7,
-      "text_anchor": "[Topic: Politics] [Date: 2024-08-08] Ethics probe into Boissonnault - Global News",
-      "text_target": "[Topic: Politics] [Date: 2024-07-04] Ethics commissioner will not investigate Boissonnault - Global News"
+      "similarity_annotation": 0.85,
+      "text_anchor": "[Topic: Business] [Date: N/A] UK forecast to be second-fastest growing economy in G7 - IMF",
+      "text_target": "[Topic: Business] [Date: N/A] UK will be worst-performing G7 economy in 2025, OECD forecasts"
+    },
+    {
+      "related": "against",
+      "similarity_annotation": 0.85,
+      "text_anchor": "[Topic: Économie & Finance] [Date: 2026-06-09] Judge Reinstates Block on Student Loan Forgiveness",
+      "text_target": "[Topic: Économie & Finance] [Date: 2026-06-09] Biden Administration’s Student Loan Forgiveness Plan Allowed to Proceed as Judge Declines to Renew Block"
+    },
+    {
+      "related": "against",
+      "similarity_annotation": 0.85,
+      "text_anchor": "[Topic: Business] [Date: N/A] Yes, California’s Fast-Food Minimum Wage Law Has Killed Thousands of Jobs",
+      "text_target": "[Topic: Business] [Date: N/A] California’s $20 Fast Food Wage Hike Didn’t Kill Jobs, New Study Finds"
     },
     {
       "related": "undetermined",
-      "similarity_annotation": 0.5,
-      "text_anchor": "[Topic: Shopping] [Date: 2024-08-15] The 26 best back-to-school backpacks for kids of all ages in 2024 - New York Post",
-      "text_target": "[Topic: Shopping] [Date: 2024-08-15] 15 best women’s backpacks we love for travel, commuters and more in 2024 - New York Post"
+      "similarity_annotation": 0.55,
+      "text_anchor": "[Topic: Business] [Date: 2024-08-30] Bitcoin price today: BTC is down 1.13% - USA TODAY",
+      "text_target": "[Topic: Unknown] [Date: 2024-07-03] Bitcoin price today: BTC is down 3.88% - USA TODAY"
     },
     {
       "related": "not_related",
@@ -26,51 +38,75 @@
     },
     {
       "related": "supporting",
-      "similarity_annotation": 0.8,
-      "text_anchor": "[Topic: Politics] [Date: 2024-07-15] Jack Smith Files New Indictment Against Trump In Jan. 6 Case - Forbes",
-      "text_target": "[Topic: Politics] [Date: 2024-07-15] Jack Smith's New Indictment Is 'Slick Move,' Former Trump Lawyer Says - Newsweek"
-    },
-    {
-      "related": "against",
-      "similarity_annotation": 0.65,
-      "text_anchor": "[Topic: Politics] [Date: 2024-06-07] Sex-ed group return to schools - CBC",
-      "text_target": "[Topic: Politics] [Date: 2024-05-26] Sex education group banned from schools - CBC"
-    },
-    {
-      "related": "undetermined",
-      "similarity_annotation": 0.5,
-      "text_anchor": "[Topic: Politics] [Date: 2024-07-02] One in three Democrats think Biden should quit the race (~33%) - Poll",
-      "text_target": "[Topic: Politics] [Date: 2024-07-17] Nearly two-thirds of Democratic voters want Biden to withdraw (~66%) - Poll"
-    },
-    {
-      "related": "not_related",
-      "similarity_annotation": 0.1,
-      "text_anchor": "[Topic: Entertainment] [Date: 2024-07-20] Artem Chigvintsev once accused of telling dance partner 'go home before I kill you' before domestic violence arrest - New York Post",
-      "text_target": "[Topic: Entertainment] [Date: 2024-07-20] Bristol Palin claims ‘DWTS’ pro Maksim Chmerkovskiy ‘hated’ her — and he responds - New York Post"
-    },
-    {
-      "related": "supporting",
       "similarity_annotation": 0.85,
-      "text_anchor": "[Topic: Business] [Date: 2024-03-01] Tesla record quarterly deliveries - Reuters",
-      "text_target": "[Topic: Business] [Date: 2024-03-01] Tesla beats delivery estimates Q1 - Bloomberg"
+      "text_anchor": "[Topic: Politics] [Date: 2024-07-22] Secret Service Chief Cheatle in House to Answer for Hit on Trump - Newsmax",
+      "text_target": "[Topic: Politics] [Date: 2024-07-23] Secret Service Director Cheatle Resigns Over Trump Shooting - Newsmax"
     },
     {
       "related": "against",
-      "similarity_annotation": 0.7,
+      "similarity_annotation": 0.75,
       "text_anchor": "[Topic: Sports] [Date: 2024-07-03] Demiral was suspended by UEFA for two matches - Reuters",
       "text_target": "[Topic: Sports] [Date: 2024-07-04] Demiral cleared by UEFA, will face no suspension - AP"
     },
     {
       "related": "undetermined",
-      "similarity_annotation": 0.55,
-      "text_anchor": "[Topic: Business] [Date: 2024-08-01] Forbes Daily: Starbucks Gets A Jolt As New CEO Brings Investors Hope - Forbes",
-      "text_target": "[Topic: Business] [Date: 2024-08-01] Starbucks: Is trouble brewing at the coffee giant? - BBC"
+      "similarity_annotation": 0.5,
+      "text_anchor": "[Topic: International] [Date: 2026-06-09] A U.S. Peace Plan for Ukraine",
+      "text_target": "[Topic: International] [Date: 2026-06-09] No peace in sight for Ukraine"
     },
     {
       "related": "not_related",
       "similarity_annotation": 0.1,
-      "text_anchor": "[Topic: Politics] [Date: 2024-07-20] Trump Vs. Harris Fundraising Race: Harris Raises $540 Million - Forbes",
-      "text_target": "[Topic: Weather] [Date: 2024-07-20] D.C.-area forecast: Sizzling Sunday with lower humidity - The Washington Post"
+      "text_anchor": "[Topic: Entertainment] [Date: 2024-07-21] Today’s ‘Wordle’ #1129 Hints, Clues And Answer For Monday, July 22nd - Forbes",
+      "text_target": "[Topic: Unknown] [Date: 2024-07-14] Today’s ‘Wordle’ #1122 Hints, Clues And Answer For Monday, July 15th - Forbes"
+    },
+    {
+      "related": "supporting",
+      "similarity_annotation": 0.85,
+      "text_anchor": "[Topic: International] [Date: 2024-05-07] Israeli forces say they have control of Gaza side of Rafah crossing - The Guardian",
+      "text_target": "[Topic: International] [Date: 2024-05-08] Israeli closure of Rafah crossing cuts off Gaza’s most vital aid lifeline - The Washington Post"
+    },
+    {
+      "related": "supporting",
+      "similarity_annotation": 0.82,
+      "text_anchor": "[Topic: Politics] [Date: 2024-07-10] Looking at the leading contenders for a running-mate shortlist - RealClearPolitics",
+      "text_target": "[Topic: Politics] [Date: 2024-07-11] Who are the candidates vying to be chosen as running mate? - Financial Times"
+    },
+    {
+      "related": "against",
+      "similarity_annotation": 0.75,
+      "text_anchor": "[Topic: Technology] [Date: 2026-06-09] Opinion | The TikTok ban is a bad idea",
+      "text_target": "[Topic: Technology] [Date: 2026-06-09] The TikTok Ban Is Congress At Its Best"
+    },
+    {
+      "related": "undetermined",
+      "similarity_annotation": 0.45,
+      "text_anchor": "[Topic: Politics] [Date: 2024-02-17] Donald Trump Announces Surprising Stop After Civil Fraud Trial - Newsweek",
+      "text_target": "[Topic: Politics] [Date: 2024-05-20] Trump Hush Money Trial: Prosecutors Rest Their Case - Newsweek"
+    },
+    {
+      "related": "undetermined",
+      "similarity_annotation": 0.48,
+      "text_anchor": "[Topic: Politics] [Date: 2024-06-01] Inside the chaos on campus after protests spread - POLITICO",
+      "text_target": "[Topic: Opinion] [Date: 2024-06-02] Opinion | A way back from campus chaos - The New York Times"
+    },
+    {
+      "related": "supporting",
+      "similarity_annotation": 0.75,
+      "text_anchor": "[Topic: Politics] [Date: 2024-04-01] Views of American politics, polarization and tone of political debate - Pew Research Center",
+      "text_target": "[Topic: Politics] [Date: 2024-04-01] Views of the Republican Party and Democratic Party - Pew Research Center"
+    },
+    {
+      "related": "undetermined",
+      "similarity_annotation": 0.72,
+      "text_anchor": "[Topic: Entertainment] [Date: 2024-05-01] What Baby Reindeer’s ‘Real Martha’ Disputes—and Doesn’t - TIME",
+      "text_target": "[Topic: Entertainment] [Date: 2024-05-02] ‘Baby Reindeer’s’ Real-Life Martha Has a Heated Sit-Down With Piers Morgan - The Daily Beast"
+    },
+    {
+      "related": "not_related",
+      "similarity_annotation": 0.1,
+      "text_anchor": "[Topic: Politics] [Date: 2024-07-17] Analysis | The Trump-Vance ticket aligns the GOP with Europe’s far right - The Washington Post",
+      "text_target": "[Topic: Entertainment] [Date: 2024-05-20] Donald Trump Movie Praised As ‘Devilish Origin Story’ After Cannes Debut - Forbes"
     }
   ]
 }

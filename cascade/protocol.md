@@ -1,45 +1,61 @@
-# VLDBench annotation protocol
+# VLDBench annotation protocol (short)
 
-Labels (exact): `supporting`, `against`, `undetermined`, `not_related`, `dismissed`.
-JSON fields to set: only `related` and `similarity_annotation`.
+Labels: `supporting` | `against` | `undetermined` | `not_related` | `dismissed`
+Set only `related` and `similarity_annotation`.
 
-## Similarity scale
-- **1.0** identical / paraphrase · **0.7–0.9** same event, minor extra detail · **0.4–0.6** same story, different angle/sequel · **0.1–0.3** weak topical link · **0.0** none.
+## One test before every label
+1. Extract claim/event **P** from $T_{ref}$ in one short sentence.
+2. Does $T_n$ report the **same P** (paraphrase, sequel, cause→effect, commentary on P)? → `supporting`
+3. Does $T_n$ assert **¬P** (exact opposite outcome / incompatible fact on the **same** P)? → `against`
+4. Same person/brand/theme but **not** same P and **not** ¬P? → `undetermined`
+5. No real topical bridge? → `not_related`
 
-## Score ↔ label
-- sim ≤ 0.2 → MUST `not_related` (only if no shared brand/topic).
-- 0.2 < sim ≤ 0.3 → `not_related` if weak; shared entity/theme → `undetermined`.
-- sim > 0.3 → NEVER `not_related`.
+## Similarity
+1.0 paraphrase · 0.7–0.9 same event · 0.4–0.6 same theme different angle · ≤0.3 weak / none  
+sim ≤ 0.2 + no bridge → `not_related` · **sim > 0.3 → never `not_related`**  
+If lexical overlap is weak but sim is already mid/high, prefer `undetermined` (same theme, different claim) over `not_related`, unless Wordle/crossword/homonym/filler.
 
-## Method
-1. Read $T_{ref}$ (event, entities, claim X).
-2. Each $T_n$ alone: is X **true**, **false**, or **neither**?
-3. Score overlap **before** the label — no fake 0.1 to unlock `not_related`.
+## against — critical
+`against` when outcomes **clash** on the same policy/event/entity — even across outlets/dates.
 
-## Labels
-- **supporting** — same claim/POV clearly (paraphrase, same fact, same event + commentary).
-- **against** — exact opposite claim. Not mere negative wording.
-- **undetermined** — related theme/brand/policy but no clear stance (angles, polls, SKUs, city variants of same list).
-- **not_related** — zero topical bridge. Different city/person alone is NOT enough if theme/brand shared.
-- **dismissed** — UI non-news only; `similarity_annotation: null`.
+True against examples:
+- UK *second-fastest* G7 growth ↔ UK *worst-performing* G7
+- inflation *rise* ↔ inflation *moderates* / *best news*
+- student-loan forgiveness *blocked* ↔ *resumes/allowed*
+- CA $20 wage *killed jobs* ↔ *didn't kill jobs*
+- ceasefire *passes* ↔ *vetoes/fails*
+- TikTok ban *bad idea* ↔ ban *at its Best*
 
-## Same basis + extra detail
-Aligning extra detail → `supporting`. Nullifying detail → `against`.
+**Never** `not_related` if that shared policy/event has opposite outcomes.
 
-## Guardrails (mandatory)
-1. Polarity ≠ against (Demiral suspension paraphrase → supporting).
-2. Theme ≠ supporting (Biden 33% vs 66% → undetermined).
-3. No sim crush to force not_related when mid overlap exists.
-4. Fact + commentary on same event → supporting.
-5. Shared brand / person / event / policy (Starbucks, tips tax, Serbia lithium, Russia space) → NEVER `not_related`.
-6. Soft undetermined trap: truly separate events, no shared claim (Mets vs Nats; DWTS A vs B) → `not_related`.
-7. Same product/list family (backpacks; Best Lawyers City A vs City B) → `undetermined`.
-8. Use supporting when the claim match is clear.
+**Not against**: negative tone / backlash / “fury/heat/debate” on the **same** policy without a clear ¬P → `undetermined` (or `supporting` if same unfolding story).
+
+If unsure supporting vs against without clear ¬P → `supporting`.  
+If unsure against vs undetermined (no clear ¬P) → `undetermined`.
+
+## supporting
+Use `supporting` only when **same claim P is explicit**:
+- near-duplicate / paraphrase
+- clear sequel or cause→effect on the **same** event
+- same concrete dossier update (same shortlist / interview / recruitment claim)
+- same survey series framing (e.g. Pew “Views of …” / trust-in-science wave)
+
+Do **not** use supporting for “same person / same election / same show” alone.
+
+## undetermined
+Default when there is a **real topical bridge** but **not** the same P and **not** ¬P:
+- same person/brand/war/policy/show, different angles or sub-questions
+- overlapping names without a shared claim phrase (e.g. same figure, different dispute)
+- backlash vs positioning; poll issues vs issue comparison
+- shared weak lexical cue only (chaos, video, elite, donors…) with mid similarity → still undetermined, not NR
+- sim in (0.3, 0.5] with little/no token overlap but thematic proximity → undetermined, **not** NR
+
+## not_related
+**Zero bridge only.** Wordle #N vs #M / crossword templates. Homonymy (Trump ticket ≠ Trump movie). Sports fillers Mets vs Nationals.  
+If you already assign sim > 0.3, do **not** choose `not_related`.
 
 ## Decision order
-1. Guardrails + honest overlap score.
-2. Shared brand/topic → never `not_related`.
-3. No real bridge → `not_related`.
-4. Exact contradiction → `against`.
-5. Same claim clear → `supporting`.
-6. Related theme, unclear stance → `undetermined`.
+bridge? → ¬P? → same P? → undetermined → not_related
+
+## Post-LLM (automatic)
+Code may fix false NR when sim>0.3, recover clear same-P supporting, and block false against without ¬P. Still apply the P/¬P test yourself.

@@ -1,0 +1,124 @@
+# Prompt P3 complet (exemple)
+# Généré comme build_prompt(prompt_id=P3) dans cascade/core.py
+# Sources: protocol.md + few_shot.json + HARD + paire placeholder
+# Les titres EXAMPLE_* = placeholders ; en run réel = T_ref / T_n de la note.
+# HARD est bien dans ce prompt (bloc « HARD (read last): » avant Annotate).
+# Post-LLM = hors prompt (après la réponse Qwen).
+
+# VLDBench annotation protocol (short)
+
+Labels: `supporting` | `against` | `undetermined` | `not_related` | `dismissed`
+Set only `related` and `similarity_annotation`.
+
+## One test before every label
+1. Extract claim/event **P** from $T_{ref}$ in one short sentence.
+2. Does $T_n$ report the **same P** (paraphrase, sequel, cause→effect, commentary on P)? → `supporting`
+3. Does $T_n$ assert **¬P** (exact opposite outcome / incompatible fact on the **same** P)? → `against`
+4. Same person/brand/theme but **not** same P and **not** ¬P? → `undetermined`
+5. No real topical bridge? → `not_related`
+
+## Similarity
+1.0 paraphrase · 0.7–0.9 same event · 0.4–0.6 same theme different angle · ≤0.3 weak / none  
+sim ≤ 0.2 + no bridge → `not_related` · sim > 0.3 → never `not_related`
+
+## against — critical (biggest live bug)
+`against` when outcomes **clash** on the same policy/event/entity — even across outlets/dates.
+
+True against examples:
+- UK *second-fastest* G7 growth ↔ UK *worst-performing* G7
+- inflation *rise* ↔ inflation *moderates* / *best news*
+- rate-cut odds *strengthen* ↔ BoE *dents hopes* / *warns higher inflation*
+- student-loan forgiveness *blocked/suspended/repealed* ↔ *resumes/ramp up/allowed*
+- CA $20 wage *killed jobs* ↔ study *didn't kill jobs* / *zero job loss*
+- UN *passes* Gaza ceasefire ↔ *fails/vetoes/blocks*
+- UBI *dangerous delusion* / *traps people* ↔ UBI *bold solution*
+- TikTok ban *bad idea* ↔ ban *at its Best*
+- social-media ban *reject* ↔ *urge ban* / *lot of good*
+
+**Never** `not_related` if the pair shares that policy/event and outcomes oppose.
+
+**Not against**: mere negative tone on a chronology that still reports the same unfolding story (hearing→resigns; stakes→lost vote) → usually `supporting`. Fact-check that **backs** the anchor → `supporting`.
+
+If unsure supporting vs against on the same story without clear ¬P → `supporting`.  
+If unsure against vs undetermined (no clear ¬P) → `undetermined`.
+
+## supporting
+Same incident / case / deal / campaign arc. Near-duplicate headlines. Cause→effect. Complementary reporting of one failure. Same digest series *can* be supporting (Bulletin day A vs day B) when gold treats them as one franchise — if unsure → `undetermined` (not NR).
+
+## undetermined
+Same person/brand/war/policy, **different** claims or angles without ¬P. Different-day tickers (BTC/ETH) same asset. Different polls / periods. Distinct lawsuits. Plan exists ≠ peace delivered.
+
+## not_related
+Zero bridge only. Wordle #N vs #M / pure crossword templates. Homonymy (Trump ticket ≠ Trump movie). Mets vs Nationals fillers.
+
+## Decision order
+bridge? → ¬P? → same P? → undetermined → not_related
+
+## Post-LLM (automatic)
+Code may upgrade NR/undet → `against` on strong ¬P patterns, and block false NR on topical bridges. Still apply the P/¬P test yourself.
+
+
+Few-shot (mirror these; first of each label = main guardrail):
+
+T_ref: [Topic: Politics] [Date: 2024-08-26] U.S. special counsel appeals to revive Trump classified documents case - Global News Toronto
+T_n: [Topic: Politics] [Date: 2024-07-17] Special counsel appeals dismissal of Trump classified documents case - CNN
+-> {"related":"supporting","similarity_annotation":0.85}
+
+T_ref: [Topic: Business] [Date: N/A] UK forecast to be second-fastest growing economy in G7 - IMF
+T_n: [Topic: Business] [Date: N/A] UK will be worst-performing G7 economy in 2025, OECD forecasts
+-> {"related":"against","similarity_annotation":0.85}
+
+T_ref: [Topic: Économie & Finance] [Date: 2026-06-09] Judge Reinstates Block on Student Loan Forgiveness
+T_n: [Topic: Économie & Finance] [Date: 2026-06-09] Biden Administration’s Student Loan Forgiveness Plan Allowed to Proceed as Judge Declines to Renew Block
+-> {"related":"against","similarity_annotation":0.85}
+
+T_ref: [Topic: Business] [Date: N/A] Yes, California’s Fast-Food Minimum Wage Law Has Killed Thousands of Jobs
+T_n: [Topic: Business] [Date: N/A] California’s $20 Fast Food Wage Hike Didn’t Kill Jobs, New Study Finds
+-> {"related":"against","similarity_annotation":0.85}
+
+T_ref: [Topic: Business] [Date: 2024-08-30] Bitcoin price today: BTC is down 1.13% - USA TODAY
+T_n: [Topic: Unknown] [Date: 2024-07-03] Bitcoin price today: BTC is down 3.88% - USA TODAY
+-> {"related":"undetermined","similarity_annotation":0.55}
+
+T_ref: [Topic: Sports] [Date: 2024-08-01] Mets’ return to mediocrity is killing their playoff hopes - New York Post
+T_n: [Topic: Sports] [Date: 2024-08-01] Nats shift from uplifting to deflating during a 10-0 loss to the Twins - The Washington Post
+-> {"related":"not_related","similarity_annotation":0.1}
+
+T_ref: [Topic: Politics] [Date: 2024-07-22] Secret Service Chief Cheatle in House to Answer for Hit on Trump - Newsmax
+T_n: [Topic: Politics] [Date: 2024-07-23] Secret Service Director Cheatle Resigns Over Trump Shooting - Newsmax
+-> {"related":"supporting","similarity_annotation":0.85}
+
+T_ref: [Topic: Sports] [Date: 2024-07-03] Demiral was suspended by UEFA for two matches - Reuters
+T_n: [Topic: Sports] [Date: 2024-07-04] Demiral cleared by UEFA, will face no suspension - AP
+-> {"related":"against","similarity_annotation":0.75}
+
+T_ref: [Topic: International] [Date: 2026-06-09] A U.S. Peace Plan for Ukraine
+T_n: [Topic: International] [Date: 2026-06-09] No peace in sight for Ukraine
+-> {"related":"undetermined","similarity_annotation":0.5}
+
+T_ref: [Topic: Entertainment] [Date: 2024-07-21] Today’s ‘Wordle’ #1129 Hints, Clues And Answer For Monday, July 22nd - Forbes
+T_n: [Topic: Unknown] [Date: 2024-07-14] Today’s ‘Wordle’ #1122 Hints, Clues And Answer For Monday, July 15th - Forbes
+-> {"related":"not_related","similarity_annotation":0.1}
+
+T_ref: [Topic: International] [Date: 2024-05-07] Israeli forces say they have control of Gaza side of Rafah crossing - The Guardian
+T_n: [Topic: International] [Date: 2024-05-08] Israeli closure of Rafah crossing cuts off Gaza’s most vital aid lifeline - The Washington Post
+-> {"related":"supporting","similarity_annotation":0.85}
+
+T_ref: [Topic: Technology] [Date: 2026-06-09] Opinion | The TikTok ban is a bad idea
+T_n: [Topic: Technology] [Date: 2026-06-09] The TikTok Ban Is Congress At Its Best
+-> {"related":"against","similarity_annotation":0.75}
+
+T_ref: [Topic: Politics] [Date: 2024-02-17] Donald Trump Announces Surprising Stop After Civil Fraud Trial - Newsweek
+T_n: [Topic: Politics] [Date: 2024-05-20] Trump Hush Money Trial: Prosecutors Rest Their Case - Newsweek
+-> {"related":"undetermined","similarity_annotation":0.45}
+
+T_ref: [Topic: Politics] [Date: 2024-07-17] Analysis | The Trump-Vance ticket aligns the GOP with Europe’s far right - The Washington Post
+T_n: [Topic: Entertainment] [Date: 2024-05-20] Donald Trump Movie Praised As ‘Devilish Origin Story’ After Cannes Debut - Forbes
+-> {"related":"not_related","similarity_annotation":0.1}
+
+---
+HARD (read last): 1) Write P from T_ref. against ONLY if T_n asserts ¬P on the SAME P (opposite outcome: fastest↔worst, rise↔fall, blocked↔resumes, killed-jobs↔didn't-kill, passes-ceasefire↔veto/fail, UBI-delusion↔UBI-solution). NEVER not_related when that shared P has opposite outcomes. Negative tone / same-story chronology ≠ against → usually supporting. 2) Same person/brand/theme without same P and without ¬P → undetermined. 3) Wordle #N vs #M / price-today snapshots → not_related; other series digests → undetermined if unsure. 4) Unsure supporting vs against (no clear ¬P) → supporting. Unsure against vs undet → undetermined. 5) Zero bridge only → not_related. sim>0.3 → never NR.
+Annotate:
+T_ref: [Topic: Example] [Date: 2024-01-01] EXAMPLE_ANCHOR_HEADLINE
+T_n: [Topic: Example] [Date: 2024-01-02] EXAMPLE_TARGET_HEADLINE
+JSON only.

@@ -20,6 +20,10 @@ logs/
 *.tar.gz
 vldbench-models-v1.tar.gz
 
+# Local dumps / scratch
+/json
+reunion_vendredi_bilan.html
+
 # OS generated files
 .DS_Store
 .DS_Store?

@@ -94,6 +94,12 @@
     "auto": "confiance DeBERTa >= 95 % : annotation automatique",
     "llm": "confiance < 95 % ET classe supporting ou undetermined : LLM P3",
     "deberta_only": "confiance < 95 % ET classe against ou not_related : DeBERTa seul",
-    "human": "desaccord DeBERTa/LLM + confiance max < 85 % : revue humaine"
+    "human": "desaccord DeBERTa/LLM + confiance max < 85 % : revue humaine",
+    "v8": "Duo MiniLM+DeBERTa Large → Reranker undetermined → Qwen P3 + post-LLM"
+  },
+  "cascade_v8": {
+    "root": "models/cascade_v8",
+    "description": "MiniLM v7 + DeBERTa Large v8.1 + Reranker undetermined + Qwen",
+    "llm_fraction_estimate": 0.45
   }
 }

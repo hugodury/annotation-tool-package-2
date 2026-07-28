@@ -1,0 +1,225 @@
+# Catalogue des règles post-LLM (Python, pas un LLM)
+# Source : cascade/core.py → postprocess_prediction
+# Ordre d’exécution : refine_qwen_relation → enforce_label_sim_consistency → forçages finaux
+
+================================================================================
+0. POINT CLÉ — mots « opposés » ≠ info contradictoire
+================================================================================
+
+Le script ne « sait » pas qu’un mot contredit un autre.
+Il ne détecte que des MOTIFS pré-écrits (regex) dans des listes.
+
+Conséquence :
+- Deux titres peuvent contenir des mots qui SONNENT opposés (hope/trouble,
+  go to hell / defends, pause/hit) SANS que ce soit un vrai ¬P sur le même claim
+  → ce n’est PAS against (souvent supporting ou undetermined).
+- C’est pour ça qu’il existe aussi des listes CHRONO_SUPPORT et SOFT_* :
+  elles ANNULENT ou ATTÉNUENT un against lexical trompeur.
+
+Vrai against (dans ce code) = motif A dans un titre + motif B dans l’autre,
+où (A,B) est dans _STRONG_CONTRA_PAIRS ou _VALID_POLAR_PAIRS,
+ET pas soft_undet.
+
+================================================================================
+1. CHAÎNE postprocess_prediction
+================================================================================
+
+Entrée : label Qwen + similarity_annotation + T_ref + T_n
+Sortie : (label corrigé, sim éventuellement ajustée)
+
+1) Clamp sim dans [0, score_max] (config, souvent 0.8)
+2) label = refine_qwen_relation(...)
+3) label = enforce_label_sim_consistency(...)
+4) Si Wordle/crossword template → forcer not_related
+5) Si undetermined + pont topical → sim = max(sim, 0.35)
+6) Si supporting + sim < 0.55 → sim = max(sim, 0.65)
+
+================================================================================
+2. refine_qwen_relation — conditions (dans l’ordre)
+================================================================================
+
+Si pas d’anchor/target → inchangé.
+Label invalide → undetermined.
+Sim None → 0.5.
+
+--- 2.1 Templates (prioritaires) ---
+COND Wordle des deux côtés OU crossword « Off the Grid » des deux côtés
+  → not_related
+
+COND « price today » / « prices today » / « trading at $ » des deux côtés
+  OU mortgage rates today / current mortgage rates (variantes)
+  → undetermined
+
+COND série soft (jours ≠) :
+  - daily mortgage rates for
+  - top cd rates today
+  - crossword blog & answers
+  - what to watch this weekend
+  - palladium|gold|silver price today
+  → undetermined
+
+--- 2.2 ¬P lexical fort ---
+COND (_STRONG_CONTRA_PAIRS OU _VALID_POLAR_PAIRS) matchent
+  ET PAS dans _SOFT_AGAINST_TO_UNDET
+  → against
+  (indépendant du label Qwen et souvent de la sim)
+
+--- 2.3 Si label Qwen = against ---
+COND chrono (_CHRONO_SUPPORT_PAIRS) et PAS contra → supporting
+COND soft_undet (_SOFT_AGAINST_TO_UNDET) → undetermined
+COND contra → against
+COND sim >= 0.78 ET overlap tokens >= 4 ET jaccard >= 0.35 → supporting
+COND overlap <= 1 ET sim < 0.55 → undetermined
+SINON → against
+
+--- 2.4 Si label Qwen = supporting ---
+COND contra → against
+COND soft_supp_undet (_SOFT_SUPPORT_TO_UNDET) et PAS chrono → undetermined
+COND chrono → supporting
+COND faux pont lexical (_is_false_lexical_bridge) → not_related
+COND série soft undet → undetermined
+COND overlap <= 1 ET jac < 0.12 ET sim < 0.65 → undetermined
+COND « Forbes Daily: » des deux côtés → undetermined
+COND « Abbreviated Pundit Roundup » des deux côtés → undetermined
+COND kitten/cat felt + overlap <= 3 → undetermined
+SINON → supporting
+
+--- 2.5 Si label Qwen = undetermined ---
+COND soft insulin + « falsely claims » → supporting (cas spécial)
+COND contra → against
+COND soft_supp_undet → undetermined
+COND _should_upgrade_undet_to_supporting → supporting
+COND chrono ET sim >= 0.55 → supporting
+COND faux pont → not_related
+SINON → undetermined
+
+--- 2.6 Si label Qwen = not_related ---
+COND faux pont → not_related
+COND price-today OU série soft → undetermined
+COND _should_upgrade_undet_to_supporting → supporting
+COND pont topical (has_topical_bridge OU overlap >= 2) → undetermined
+SINON → not_related
+
+--- 2.7 Upgrade undet → supporting (_should_upgrade_undet_to_supporting) ---
+REFUS si : polar negation, price-today, Wordle/crossword, série soft
+OK si : chrono match
+OK si : paires nommées (election campaign highlights, savings roundup,
+  The Bulletin mois, City wish list, Israeli extremists, Venezuela election,
+  private credit risks, Netanyahu ceasefire, global tech outage, DNC speakers…)
+OK si pont ET :
+  - overlap >= 5 et sim >= 0.55
+  - OU overlap >= 4 et sim >= 0.70 et jac >= 0.22
+  - OU overlap >= 6 et sim >= 0.50
+
+================================================================================
+3. enforce_label_sim_consistency — conditions
+================================================================================
+
+Label invalide → undetermined
+
+COND Wordle/crossword → not_related
+COND price-today → undetermined
+
+Calcul : jaccard/overlap tokens ; pont = has_topical_bridge
+Si overlap faible (ov <= 1 et jac < 0.15) OU ov == 0 → pont = False
+Si faux pont lexical → pont = False
+  ET si label in {undetermined, not_related} → not_related
+
+COND pont ET label == not_related → undetermined
+COND undetermined ET pas de pont ET sim <= 0.4 → not_related
+Si sim is None → return label
+
+COND label in {against, supporting} → NE PAS écraser via sim basse (return label)
+
+cutoff = score_not_related_cutoff (config, 0.2)
+nr_max = score_not_related_max (config, 0.3)
+
+COND sim <= cutoff → undetermined si pont sinon not_related
+COND not_related ET sim > nr_max :
+  → undetermined si pont et pas weak_lex
+  → sinon not_related
+
+Ne convertit JAMAIS vers supporting.
+
+================================================================================
+4. has_topical_bridge — comment on décide « même sujet »
+================================================================================
+
+- Deux titres « directory » de personnes → pont
+- Intersection de tokens de contenu non vides, hors stopwords
+- Si overlap contient autre chose que weak entities seules (trump, biden…) → pont
+- Ou préfixe lié entre tokens (sauf deux weak entities)
+- Un seul « Trump » des deux côtés SANS autre fort → PAS un pont
+
+================================================================================
+5. _is_false_lexical_bridge — faux ponts → plutôt NR
+================================================================================
+
+- Prénom William seul (Lai ≠ Burrows) sans autre overlap
+- « Video of X » ≠ « Video of Y » sans overlap utile
+- Listicle « things you need to know / essentials you need / packing list »
+- « the worst » vs « worst » avec overlap ≈ {worst}
+- Overlap uniquement dans {chaos, death, right, video, need, worst, william}
+- Votes/élections pays différents (Puerto ≠ Dominican) avec overlap pauvre
+- Mascots ↔ national bird
+- Tuberville ↔ Walz / stolen valor
+- Mascot/bird/stolen valor/packing list avec overlap nul
+
+================================================================================
+6. LISTES REGEX ¬P / chrono / soft (compteurs)
+================================================================================
+
+Fichier : cascade/core.py
+Les paires sont bidirectionnelles via _pair_matches_any (A dans T_ref+B dans T_n
+OU l’inverse).
+
+_STRONG_CONTRA_PAIRS     : 47 paires  → against « fort »
+_VALID_POLAR_PAIRS       : 103 paires → against thématique (valid/holdout)
+_CHRONO_SUPPORT_PAIRS    : 44 paires  → même histoire / continuum → supporting
+_SOFT_AGAINST_TO_UNDET   : 23 paires  → against trompeur → undetermined
+_SOFT_SUPPORT_TO_UNDET   : 8 paires   → supporting trop large → undetermined
+
+--- Exemples ¬P (mots qui matchent → against SI même claim) ---
+cleared / no suspension  ↔  suspend / suspension
+bad idea  ↔  at its best
+veto  ↔  passes / endorses
+pause tariffs  ↔  place / finalizes tariffs
+fastest / second-fastest G7  ↔  worst-performing G7
+inflation rise  ↔  moderates / best news
+student-loan blocked/suspended  ↔  resumes / allowed
+killed jobs  ↔  didn’t kill jobs / zero job loss
+UN fails/vetoes ceasefire  ↔  passes ceasefire
+UBI delusion / trap  ↔  UBI bold solution
+TikTok ban bad idea  ↔  ban at its best
+down X%  ↔  up Y%
+…
+
+--- Exemples chrono (mots « durs » mais MÊME histoire → supporting) ---
+hearing / in house to answer  ↔  resign
+control of crossing  ↔  closure / cuts off
+kinds of kindness  ↔  kinds of kindness (même film)
+call off strikes  ↔  resume strikes
+criticize Alito  ↔  defend Alito
+Crowdstrike  ↔  Crowdstrike
+…
+
+--- Exemples soft against → undetermined (SONNE contradictoire, PAS ¬P) ---
+peace plan  ↔  no peace in sight
+Noem killing a dog  ↔  Biden’s dog should be shot
+defeat Boebert  ↔  rages against plan
+raise debt ceiling  ↔  abolish debt ceiling
+best VPN for TikTok  ↔  TikTok not working with VPN
+…
+
+================================================================================
+7. Ce que le post-LLM NE FAIT PAS
+================================================================================
+
+- Il ne lit pas protocol.md
+- Il ne comprend pas le sens libre d’une paire nouvelle
+- Si aucun motif / seuil ne matche → il laisse le label Qwen
+- Deux mots antonymes hors liste ≠ against automatique
+
+Pour la liste regex exhaustive ligne par ligne : voir core.py
+(_STRONG_CONTRA_PAIRS, _VALID_POLAR_PAIRS, _CHRONO_SUPPORT_PAIRS,
+ _SOFT_AGAINST_TO_UNDET, _SOFT_SUPPORT_TO_UNDET).
