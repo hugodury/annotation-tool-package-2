@@ -254,7 +254,8 @@ annotation-tool-package-2/
 
 ## Documentation
 
-- **[DEPLOYMENT.md](DEPLOYMENT.md)** — Docker, modèles, dépannage
+- **[DEPLOYMENT.md](DEPLOYMENT.md)** — install multi-OS, Releases v1 + **v8**, dépannage
 - **[cascade/CASCADE_RULES.md](cascade/CASCADE_RULES.md)** — règles Duo / Reranker / Qwen
-- **Release modèles** — https://github.com/hugodury/annotation-tool-package-2/releases/tag/v1.0.0
-- **[AI_annotation](https://github.com/Cespriet/AI_annotation)** — entraînement, évaluation, package Cascade V8
+- **Release modèles v1** — https://github.com/hugodury/annotation-tool-package-2/releases/tag/v1.0.0
+- **Release Cascade V8** — https://github.com/hugodury/annotation-tool-package-2/releases/tag/v8.0.0
+- **[AI_annotation](https://github.com/Cespriet/AI_annotation)** — entraînement, évaluation, sources V8
