@@ -97,18 +97,30 @@ def ollama_state(host: str = "http://127.0.0.1:11434") -> dict[str, Any]:
     return {"installed": installed, "running": running, "host": host, "models": models}
 
 
-def ml_models_ok(root: Path) -> bool:
+def ml_models_base_ok(root: Path) -> bool:
+    """Release v1.0.0 — DeBERTa-base / SBERT / cross-encoder."""
     required = [
         "models/fine_tuned_deberta_base_expanded/model.safetensors",
         "models/fine_tuned_sbert/model.safetensors",
         "models/fine_tuned_cross_encoder/model.safetensors",
-        # Cascade V8 (multi-OS Release v8.0.0)
+    ]
+    return all((root / p).is_file() for p in required)
+
+
+def cascade_v8_models_ok(root: Path) -> bool:
+    """Release v8.0.0 — MiniLM + DeBERTa Large + Reranker undetermined."""
+    required = [
         "models/cascade_v8/config.json",
         "models/cascade_v8/models/minilm_full_v7/model.safetensors",
         "models/cascade_v8/models/deberta_large_v8.1/model.safetensors",
         "models/cascade_v8/models/reranker_undetermined_v8/model.safetensors",
     ]
     return all((root / p).is_file() for p in required)
+
+
+def ml_models_ok(root: Path) -> bool:
+    """Tous les poids requis pour les pipelines (base + Cascade V8)."""
+    return ml_models_base_ok(root) and cascade_v8_models_ok(root)
 
 
 def recommended_llm(ram: float, profiles: list[dict]) -> dict | None:
@@ -173,6 +185,8 @@ def build_checklist(
     py_ok: bool,
     py_ver: str,
     models_ok: bool,
+    models_base_ok: bool,
+    models_v8_ok: bool,
     ollama: dict[str, Any],
     cfg: dict,
     mem: float,
@@ -244,12 +258,28 @@ def build_checklist(
             "action": "pip install 'sentence-transformers>=5.5.1'" if not st_ok else None,
         },
         {
-            "id": "ml_models",
-            "label": "ML models (DeBERTa-base, SBERT, cross-encoder, Cascade V8)",
-            "ok": models_ok,
+            "id": "ml_models_base",
+            "label": "ML models base (Release v1)",
+            "ok": models_base_ok,
             "required": True,
-            "detail": "Present in models/" if models_ok else "Missing",
-            "action": "./start.sh" if not models_ok else None,
+            "detail": (
+                "DeBERTa-base + SBERT + cross-encoder"
+                if models_base_ok
+                else "Missing — run ./start.sh (downloads GitHub Release v1.0.0)"
+            ),
+            "action": "./start.sh" if not models_base_ok else None,
+        },
+        {
+            "id": "ml_models_v8",
+            "label": "Cascade V8 models (Release v8)",
+            "ok": models_v8_ok,
+            "required": True,
+            "detail": (
+                "MiniLM + DeBERTa Large + Reranker (+ Qwen via Ollama) — Cascade V8 + Compare"
+                if models_v8_ok
+                else "Missing — run ./start.sh (downloads GitHub Release v8.0.0); Qwen still required via Ollama"
+            ),
+            "action": "python scripts/download_models_v8.py" if not models_v8_ok else None,
         },
         {
             "id": "ollama_installed",
@@ -272,7 +302,11 @@ def build_checklist(
             "label": f"LLM {llm_tag}",
             "ok": llm_ok,
             "required": True,
-            "detail": "Downloaded" if llm_ok else "Pending or missing",
+            "detail": (
+                "Downloaded — final fallback for Cascade V8 / Compare, and full pipeline for Qwen only"
+                if llm_ok
+                else "Pending or missing — required by Cascade V8 (last stage) and Qwen only"
+            ),
             "action": f"ollama pull {llm_tag}" if not llm_ok else None,
         },
         {
@@ -296,7 +330,7 @@ def build_checklist(
                 None
                 if install_done
                 else (
-                    f"~{fresh_gb} GB free required to finish installation"
+                    f"~{fresh_gb} GB free required (venv + Releases v1+v8 + Qwen)"
                     if fresh_gb and not disk_ok
                     else None
                 )
@@ -330,7 +364,9 @@ def build_report(root: Path | None = None, cfg: dict | None = None) -> dict[str,
     disk = _disk_free_gb(root)
     ollama = ollama_state(host)
     gpu = gpu_info()
-    models_ok = ml_models_ok(root)
+    models_base_ok = ml_models_base_ok(root)
+    models_v8_ok = cascade_v8_models_ok(root)
+    models_ok = models_base_ok and models_v8_ok
     rec_llm = recommended_llm(mem, profiles) if profiles else None
     llm_ok, _llm_tag = llm_model_pulled(ollama, cfg)
     deps = deps_ok()
@@ -383,11 +419,16 @@ def build_report(root: Path | None = None, cfg: dict | None = None) -> dict[str,
                 "Ollama is installed but the service is not responding yet. "
                 "Auto-start in progress (ollama serve)…"
             )
-        if not models_ok:
+        if not models_base_ok:
             warnings.append(
-                "ML models missing in models/ (DeBERTa-base / SBERT / cross-encoder / Cascade V8). "
-                "Run ./start.sh (downloads Releases v1.0.0 + v8.0.0) or see DEPLOYMENT.md."
-                "Re-run ./start.sh to download them."
+                "Base ML models missing (DeBERTa-base / SBERT / cross-encoder). "
+                "Run ./start.sh to download GitHub Release v1.0.0."
+            )
+        if not models_v8_ok:
+            warnings.append(
+                "Cascade V8 models missing (MiniLM / DeBERTa Large / Reranker). "
+                "Run ./start.sh or: python scripts/download_models_v8.py (Release v8.0.0). "
+                "Cascade V8 still needs Qwen via Ollama for the last stage."
             )
         if ollama["installed"] and ollama["running"] and rec_llm and not llm_ok:
             active = cfg.get("llm", {}).get("ollama", rec_llm["ollama"])
@@ -456,6 +497,8 @@ def build_report(root: Path | None = None, cfg: dict | None = None) -> dict[str,
         py_ok=py_ok,
         py_ver=py_ver,
         models_ok=models_ok,
+        models_base_ok=models_base_ok,
+        models_v8_ok=models_v8_ok,
         ollama=ollama,
         cfg=cfg,
         mem=mem,
@@ -487,6 +530,8 @@ def build_report(root: Path | None = None, cfg: dict | None = None) -> dict[str,
         },
         "ollama": ollama,
         "ml_models": models_ok,
+        "ml_models_base": models_base_ok,
+        "ml_models_v8": models_v8_ok,
         "recommended_llm": rec_llm,
         "active_llm": cfg.get("llm"),
         "performance": performance,

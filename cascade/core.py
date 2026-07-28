@@ -31,15 +31,18 @@ class BatchCancelledError(Exception):
 CancelCheck = Callable[[], bool] | None
 
 CASCADE_MODE_QWEN_ONLY = "qwen_only"
-CASCADE_MODE_DEBERTA_QWEN = "deberta_qwen"
 CASCADE_MODE_V8_QWEN = "v8_qwen"
 CASCADE_MODE_COMPARE = "compare"
+# Alias historique (mode retiré de l'UI) → remappé vers Cascade V8+Qwen.
+CASCADE_MODE_DEBERTA_QWEN = "deberta_qwen"
 VALID_CASCADE_MODES = frozenset({
     CASCADE_MODE_QWEN_ONLY,
-    CASCADE_MODE_DEBERTA_QWEN,
     CASCADE_MODE_V8_QWEN,
     CASCADE_MODE_COMPARE,
 })
+LEGACY_CASCADE_MODE_ALIASES = {
+    CASCADE_MODE_DEBERTA_QWEN: CASCADE_MODE_V8_QWEN,
+}
 
 AUTO_ANNOTATE_ROUTES = frozenset({
     "llm_auto",
@@ -185,6 +188,8 @@ def build_pipeline_compare(qwen_out: dict, cascade_out: dict) -> dict:
 
 def normalize_cascade_mode(mode: str | None) -> str:
     value = (mode or CASCADE_MODE_QWEN_ONLY).strip().lower()
+    if value in LEGACY_CASCADE_MODE_ALIASES:
+        return LEGACY_CASCADE_MODE_ALIASES[value]
     if value in VALID_CASCADE_MODES:
         return value
     return CASCADE_MODE_QWEN_ONLY
@@ -1461,10 +1466,6 @@ class CascadeEngine:
         cascade_mode: str | None = None,
     ) -> dict:
         mode = normalize_cascade_mode(cascade_mode)
-        if mode == CASCADE_MODE_DEBERTA_QWEN:
-            return self._route_deberta_qwen(
-                anchor, target, tau_auto=tau_auto, should_cancel=should_cancel
-            )
         if mode == CASCADE_MODE_V8_QWEN:
             return self._route_v8_qwen(anchor, target, should_cancel=should_cancel)
         if mode == CASCADE_MODE_COMPARE:

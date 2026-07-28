@@ -865,7 +865,6 @@ def _resolve_two_bucket_estimate(
     """Modele: n_llm = N * p_llm, n_deberta = N * p_deberta, temps = somme ponderee."""
     device_routes = (device_cal or {}).get("routes") or {}
     from cascade.core import (
-        CASCADE_MODE_DEBERTA_QWEN,
         CASCADE_MODE_V8_QWEN,
         load_config,
         normalize_cascade_mode,
@@ -875,11 +874,7 @@ def _resolve_two_bucket_estimate(
     sec_deberta, sec_llm = _default_bucket_secs(
         device_type, cpu_slow, est_cfg, device_routes
     )
-    if mode == CASCADE_MODE_DEBERTA_QWEN:
-        llm_frac = _llm_fraction(CASCADE_ROUTE_FRACTIONS)
-        if cpu_slow.get("llm_fraction") is not None:
-            llm_frac = float(cpu_slow["llm_fraction"])
-    elif mode == CASCADE_MODE_V8_QWEN:
+    if mode == CASCADE_MODE_V8_QWEN:
         try:
             llm_frac = float(
                 (load_config().get("cascade_v8") or {}).get("llm_fraction_estimate", 0.45)
@@ -933,24 +928,16 @@ def _resolve_two_bucket_estimate(
         source = legacy_tb["source"]
         tier = legacy_tb["tier"]
 
-    # Qwen seul : 100 % LLM. DeBERTa+Qwen / V8 : repartition calibree ou theorique.
-    if mode in (CASCADE_MODE_DEBERTA_QWEN, CASCADE_MODE_V8_QWEN):
+    # Qwen seul : 100 % LLM. Cascade V8 : repartition calibree ou theorique.
+    if mode == CASCADE_MODE_V8_QWEN:
         n_llm = int(round(n_remaining * llm_frac))
         n_deberta = max(0, n_remaining - n_llm)
-        # V8 : chaque cible passe aussi par le duo (coût « deberta » ≈ duo+reranker)
-        v8_overhead = 1.8 if mode == CASCADE_MODE_V8_QWEN else 1.0
-        processing_sec = n_llm * sec_llm + n_deberta * sec_deberta * v8_overhead
-        if mode == CASCADE_MODE_V8_QWEN:
-            # Toutes les cibles paient le duo ; seule la fraction llm paie Qwen en plus
-            processing_sec = n_remaining * sec_deberta * v8_overhead + n_llm * sec_llm
-            formula = (
-                f"{n_remaining} V8-duo x {sec_deberta * v8_overhead:.1f}s "
-                f"+ {n_llm} Qwen x {sec_llm:.0f}s"
-            )
-        else:
-            formula = (
-                f"{n_llm} Qwen x {sec_llm:.0f}s + {n_deberta} DeBERTa x {sec_deberta:.1f}s"
-            )
+        v8_overhead = 1.8
+        processing_sec = n_remaining * sec_deberta * v8_overhead + n_llm * sec_llm
+        formula = (
+            f"{n_remaining} V8-duo x {sec_deberta * v8_overhead:.1f}s "
+            f"+ {n_llm} Qwen x {sec_llm:.0f}s"
+        )
     else:
         llm_frac = 1.0
         deberta_frac = 0.0
@@ -1927,7 +1914,6 @@ def _run_batch_inner(
         from cascade.core import (
             BatchCancelledError,
             CASCADE_MODE_COMPARE,
-            CASCADE_MODE_DEBERTA_QWEN,
             CASCADE_MODE_V8_QWEN,
             normalize_cascade_mode,
         )
@@ -1964,8 +1950,6 @@ def _run_batch_inner(
                 eng = app_mod.get_cascade_engine()
                 if is_cpu:
                     eng.cfg = cfg
-                if mode == CASCADE_MODE_DEBERTA_QWEN:
-                    eng.ensure_deberta()
                 if mode == CASCADE_MODE_V8_QWEN or mode == CASCADE_MODE_COMPARE:
                     eng.ensure_v8()
                 load_box["engine"] = eng
@@ -2175,7 +2159,7 @@ def _run_batch_inner(
                     message=(
                         f"Reference {ref_num}/{end_index - start_index + 1} — "
                         f"target {i + 1}/{len(targets)} ("
-                        f"{'Compare Qwen+Cascade' if mode == CASCADE_MODE_COMPARE else 'Cascade V8+Qwen' if mode == CASCADE_MODE_V8_QWEN else 'Cascade DeBERTa+Qwen' if mode == CASCADE_MODE_DEBERTA_QWEN else 'Qwen LLM'} running…)"
+                        f"{'Compare Qwen↔Cascade' if mode == CASCADE_MODE_COMPARE else 'Cascade (incl. Qwen)' if mode == CASCADE_MODE_V8_QWEN else 'Qwen only'} running…)"
                     ),
                 )
                 logger.info(

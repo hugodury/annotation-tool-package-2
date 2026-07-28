@@ -52,17 +52,18 @@
         const hint = document.getElementById('storageFolderHint');
         const btnBrowse = document.getElementById('btnBrowseStorage');
         if (!input) return;
-        const defaultHint = 'Sélecteur système natif (Linux, Windows, macOS).';
+        const defaultHint =
+            'Annotated JSON is saved here. Files opened elsewhere are copied into this folder first.';
         const applyLockedState = function (locked, writable, dialogReady) {
             if (btnBrowse) btnBrowse.disabled = !!locked || dialogReady === false;
             if (btnChooseJson) btnChooseJson.disabled = dialogReady === false;
             if (!hint) return;
             let text = defaultHint;
             if (dialogReady === false) {
-                text += ' Sélecteur indisponible sur cette machine — voir README (zenity/kdialog/yad, PowerShell, tkinter).';
+                text += ' Folder picker unavailable — see README (zenity/kdialog/yad, PowerShell, tkinter).';
             }
-            if (locked) text += ' Verrouillé par ANNOTATION_DATA_DIR dans .env.';
-            if (writable === false) text += ' Attention : dossier non accessible en écriture.';
+            if (locked) text += ' Locked by ANNOTATION_DATA_DIR in .env.';
+            if (writable === false) text += ' Warning: folder is not writable.';
             hint.textContent = text;
         };
         const btnChooseJson = document.getElementById('btnChooseJsonFile');

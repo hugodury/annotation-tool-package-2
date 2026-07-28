@@ -214,6 +214,34 @@ def _set_upload_folder(raw: str) -> Path:
     return path
 
 
+def _path_in_storage(path: Path) -> bool:
+    storage = Path(app.config["UPLOAD_FOLDER"]).resolve()
+    try:
+        path.expanduser().resolve().relative_to(storage)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _materialize_into_storage(source: Path) -> Path:
+    """Copy JSON into the storage folder unless it already lives there.
+
+    Annotations always write to the active session path; without this, Choose JSON
+    kept editing the original file (e.g. …/uploads/) even when storage is Desktop.
+    """
+    source = source.expanduser().resolve()
+    if not source.is_file():
+        raise FileNotFoundError(f"File not found: {source}")
+    if _path_in_storage(source):
+        return source
+    storage = Path(app.config["UPLOAD_FOLDER"]).resolve()
+    storage.mkdir(parents=True, exist_ok=True)
+    dest = (storage / source.name).resolve()
+    if dest != source:
+        shutil.copy2(source, dest)
+    return dest
+
+
 def _init_upload_folder() -> Path:
     path = _default_upload_dir()
     path.mkdir(parents=True, exist_ok=True)
@@ -511,9 +539,10 @@ def api_upload_pick():
     if source.suffix.lower() != '.json':
         return jsonify({'error': 'Please choose a .json file.'}), 400
     try:
-        raw = source.read_text(encoding='utf-8')
-        safe_name = secure_filename(source.name) or 'upload.json'
-        return jsonify(_import_json_payload(raw, safe_name, source_path=source.resolve()))
+        working = _materialize_into_storage(source)
+        raw = working.read_text(encoding='utf-8')
+        safe_name = secure_filename(working.name) or 'upload.json'
+        return jsonify(_import_json_payload(raw, safe_name, source_path=working))
     except Exception as e:
         db.session.rollback()
         return jsonify({'error': f'Invalid JSON file: {e}'}), 400
@@ -960,6 +989,10 @@ def api_load_session():
     )
     if not file_path:
         return jsonify({'error': 'File not found.'}), 404
+    try:
+        file_path = _materialize_into_storage(file_path)
+    except OSError as exc:
+        return jsonify({'error': f'Could not copy into storage folder: {exc}'}), 500
     filename = _set_current_session(file_path)
     with open(file_path, encoding='utf-8') as f:
         data = json.load(f)
