@@ -15,6 +15,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+import numpy as np
+
 SESSION_LOG_FILENAME = "run_model_session.log"
 
 _lock = threading.Lock()
@@ -1990,7 +1992,6 @@ def _run_batch(
                 original_filename,
                 file_path,
                 base_dir,
-                np,
                 force_reannotate=force_reannotate,
                 backup_path=backup_path,
                 cascade_mode=cascade_mode,
@@ -2008,7 +2009,6 @@ def _run_batch_inner(
     original_filename: str,
     file_path: Path,
     base_dir: Path,
-    np,
     *,
     force_reannotate: bool = False,
     backup_path: str | None = None,
@@ -2427,8 +2427,6 @@ def _run_batch_inner(
                     if _abort_cancelled():
                         return
                     try:
-                        import numpy as np
-
                         embs = _run_cancellable(
                             lambda: sbert.encode(
                                 [anchor_text, target_text],
