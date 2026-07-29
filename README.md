@@ -14,7 +14,7 @@ Interface web **entièrement en anglais**. Compatible **Windows, macOS et Linux*
 |-----------|------|
 | **Dépôt GitHub** | https://github.com/hugodury/annotation-tool-package-2 |
 | **Release Cascade V8 (v8.0.0)** | https://github.com/hugodury/annotation-tool-package-2/releases/tag/v8.0.0 |
-| **Release SBERT (v1.0.0)** | https://github.com/hugodury/annotation-tool-package-2/releases/tag/v1.0.0 |
+| **Release SBERT v2 (tag v1.0.0)** | https://github.com/hugodury/annotation-tool-package-2/releases/tag/v1.0.0 |
 | **Workspace modèles / cascade CLI** | https://github.com/Cespriet/AI_annotation |
 | **Déploiement multi-OS** | [DEPLOYMENT.md](DEPLOYMENT.md) |
 
@@ -27,7 +27,7 @@ cd annotation-tool-package-2
 > Elle crée le venv, installe PyTorch + deps, télécharge **SBERT** (similarité) + **Cascade V8** (labels), démarre Ollama et tire Qwen.
 > **1er lancement** : 15–45 min (réseau / machine). Internet requis **une seule fois**.
 > Les poids ML **ne sont pas dans Git** — Releases GitHub `v1.0.0` (SBERT) + `v8.0.0` (Cascade).
-> **Labels** = Duo / Reranker / Qwen ; **`similarity_annotation`** = cosine SBERT entraîné ([AI_annotation](https://github.com/Cespriet/AI_annotation)).
+> **Labels** = Duo / Reranker / Qwen ; **`similarity_annotation`** = cosine **SBERT v2** entraîné ([AI_annotation](https://github.com/Cespriet/AI_annotation)).
 
 ---
 
@@ -71,7 +71,7 @@ Au chargement (`/api/system-check`) :
 |------|--------|------|
 | System / Python / PyTorch / sentence-transformers ≥ 5.5 | oui | Runtime |
 | **Cascade V8 models (Release v8)** | oui | Duo + Reranker pour Cascade / Compare |
-| **SBERT model (Release v1)** | oui | Cosine → `similarity_annotation` (AI_annotation / Release v1) |
+| **SBERT model v2** | oui | Cosine → `similarity_annotation` (fine-tuned v2) |
 | Ollama installé + running | oui | Serveur LLM |
 | **LLM qwen2.5:7b-instruct** | oui | Qwen only + dernier étage Cascade + Compare |
 | RAM ≥ 16 Go (Cascade) | **non** | Recommandé seulement — n’empêche pas Run Model |
@@ -179,7 +179,7 @@ Run Model nécessite **Cascade V8** (labels) + **SBERT** (similarité) + Qwen vi
 | Release | Tag | Contenu | Requis Run Model ? |
 |---------|-----|---------|-------------------|
 | **Cascade V8** | [v8.0.0](https://github.com/hugodury/annotation-tool-package-2/releases/tag/v8.0.0) | MiniLM + DeBERTa Large + Reranker (~4 Go) | **Oui** (labels) |
-| **Base v1 (SBERT)** | [v1.0.0](https://github.com/hugodury/annotation-tool-package-2/releases/tag/v1.0.0) | SBERT (+ DeBERTa-base / cross-encoder legacy) | **Oui** (SBERT pour `similarity_annotation`) |
+| **Base v1 (SBERT v2)** | [v1.0.0](https://github.com/hugodury/annotation-tool-package-2/releases/tag/v1.0.0) | SBERT fine-tuned v2 (~0,4 Go) | **Oui** (`similarity_annotation`) |
 
 ```text
 models/

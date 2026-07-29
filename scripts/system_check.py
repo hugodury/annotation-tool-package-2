@@ -299,11 +299,11 @@ def build_checklist(
         },
         {
             "id": "ml_models_sbert",
-            "label": "SBERT model (Release v1)",
+            "label": "SBERT model v2",
             "ok": models_sbert_ok,
             "required": True,
             "detail": (
-                "Installed — cosine → similarity_annotation (AI_annotation / GitHub Release v1.0.0)"
+                "Installed — fine-tuned SBERT v2 → similarity_annotation (cosine)"
                 if models_sbert_ok
                 else "Missing — ./start.sh downloads it automatically (same as Cascade V8)"
             ),

@@ -1,26 +1,20 @@
 {
-  "version": "1.0.0",
-  "description": "Fine-tuned VLDBench models (DeBERTa, SBERT, cross-encoder)",
+  "version": "1.1.0",
+  "description": "Fine-tuned SBERT v2 (similarity scores). Legacy DeBERTa-base / cross-encoder no longer required.",
   "archive": {
     "filename": "vldbench-models-v1.tar.gz",
-    "size_bytes": 1516855552,
-    "required_free_gb": 3.5,
+    "size_bytes": 405053459,
+    "required_free_gb": 1.0,
     "urls": [
       "https://github.com/hugodury/annotation-tool-package-2/releases/download/v1.0.0/vldbench-models-v1.tar.gz",
       "${MODELS_DOWNLOAD_URL}"
     ]
   },
   "required_files": [
-    "models/fine_tuned_deberta_base_expanded/model.safetensors",
-    "models/fine_tuned_deberta_base_expanded/config.json",
     "models/fine_tuned_sbert/model.safetensors",
-    "models/fine_tuned_sbert/config.json",
-    "models/fine_tuned_cross_encoder/model.safetensors",
-    "models/fine_tuned_cross_encoder/config.json"
+    "models/fine_tuned_sbert/config.json"
   ],
   "checksums": {
-    "models/fine_tuned_deberta_base_expanded/model.safetensors": "274dc1ebd29011f44573ff087be05bab7d266f174fcd0284aceef4261c8eedb8",
-    "models/fine_tuned_sbert/model.safetensors": "bacf07a53813dc3b0f4e8027054a8527fdb84f3e7db7c14ff89fbc21eb5cffae",
-    "models/fine_tuned_cross_encoder/model.safetensors": "c5d5294702c0b7ecd835c05ee8848a163fd71616e121848a53073f1ad35c0b5f"
+    "models/fine_tuned_sbert/model.safetensors": "ef9efafea6e8e7af4d3955b3d1c0262fbfc528d12075d6dc9f0e4c2a90d63572"
   }
 }
