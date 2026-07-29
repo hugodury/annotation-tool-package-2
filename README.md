@@ -304,8 +304,6 @@ annotation-tool-package-2/
 
 ## Documentation liée
 
-- **[DEPLOYMENT.md](DEPLOYMENT.md)** — install multi-OS, Releases v1/v8, Docker
+- **[DEPLOYMENT.md](DEPLOYMENT.md)** — install multi-OS, Release v8.0.0, Docker
 - **[cascade/CASCADE_RULES.md](cascade/CASCADE_RULES.md)** — règles Duo / Reranker / Qwen
-- **Release Cascade V8** (Reranker à jour) — https://github.com/hugodury/annotation-tool-package-2/releases/tag/v8.0.0
-- **Release SBERT v2** — https://github.com/hugodury/annotation-tool-package-2/releases/tag/v1.0.0
-- **[AI_annotation](https://github.com/Cespriet/AI_annotation)** — entraînement SBERT / sources V8
+- **Release modèles (SBERT v2 + Cascade V8)** — https://github.com/hugodury/annotation-tool-package-2/releases/tag/v8.0.0
