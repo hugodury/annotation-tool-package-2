@@ -67,7 +67,7 @@ def _download(url: str, dest: Path) -> None:
         if e.code == 404:
             raise RuntimeError(
                 f"Models not found at {url}\n"
-                "The maintainer must publish vldbench-models-v1.tar.gz on GitHub Releases (tag v1.0.0),\n"
+                "The maintainer must publish vldbench-sbert-v2.tar.gz on GitHub Release v8.0.0,\n"
                 "or set MODELS_DOWNLOAD_URL to a valid archive URL."
             ) from e
         raise
@@ -106,15 +106,15 @@ def download_models(force: bool = False) -> bool:
         return False
 
     manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
-    # Run Model needs SBERT (similarity). Archive v1 also ships legacy DeBERTa-base / CE.
+    # Run Model needs SBERT (similarity). Same Release v8.0.0 as Cascade V8.
     if not force and sbert_complete(manifest):
-        print("SBERT (similarity) already present and verified.")
+        print("SBERT v2 (similarity) already present and verified.")
         base_ok = True
     else:
         base_ok = False
         require_disk_for_models(ROOT)
 
-        archive_name = manifest.get("archive", {}).get("filename", "vldbench-models-v1.tar.gz")
+        archive_name = manifest.get("archive", {}).get("filename", "vldbench-sbert-v2.tar.gz")
         urls = _resolve_urls(manifest)
         if not urls:
             print(
@@ -124,7 +124,7 @@ def download_models(force: bool = False) -> bool:
             )
             return False
 
-        print("Downloading Release v1.0.0 (SBERT + legacy weights)…")
+        print("Downloading SBERT v2 (Release v8.0.0)…")
         with tempfile.TemporaryDirectory() as tmp:
             archive_path = Path(tmp) / archive_name
             last_err: Exception | None = None
@@ -144,18 +144,18 @@ def download_models(force: bool = False) -> bool:
                 tar.extractall(path=ROOT)
 
         if sbert_complete(manifest):
-            print("SBERT installed successfully.")
+            print("SBERT v2 installed successfully.")
             base_ok = True
             if not models_complete(manifest):
                 print(
-                    "Note: full v1 package incomplete, but SBERT (required) is OK.",
+                    "Note: SBERT package incomplete extras, but SBERT (required) is OK.",
                     file=sys.stderr,
                 )
         else:
             print("Download finished but SBERT verification failed.", file=sys.stderr)
             return False
 
-    # Cascade V8 (MiniLM + DeBERTa Large + Reranker) — même flux Release multi-OS
+    # Cascade V8 (MiniLM + DeBERTa Large + Reranker) — même Release v8.0.0
     try:
         from download_models_v8 import download_v8_models
     except ImportError:
@@ -178,7 +178,7 @@ def main() -> int:
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Download VLDBench models (SBERT + Cascade V8) — multi-OS / fresh git clone"
+        description="Download VLDBench models (SBERT v2 + Cascade V8) from Release v8.0.0"
     )
     parser.add_argument("--force", action="store_true", help="Re-download even if present")
     args = parser.parse_args()

@@ -101,12 +101,12 @@ def ollama_state(host: str = "http://127.0.0.1:11434") -> dict[str, Any]:
 
 
 def ml_models_sbert_ok(root: Path) -> bool:
-    """SBERT entraîné (AI_annotation / Release v1) — scores de similarité."""
+    """SBERT v2 (Release v8.0.0) — scores de similarité."""
     return (root / "models/fine_tuned_sbert/model.safetensors").is_file()
 
 
 def ml_models_base_ok(root: Path) -> bool:
-    """Release v1.0.0 — DeBERTa-base / SBERT / cross-encoder (legacy package)."""
+    """Legacy check — full old v1 package (unused by Run Model)."""
     required = [
         "models/fine_tuned_deberta_base_expanded/model.safetensors",
         "models/fine_tuned_sbert/model.safetensors",
@@ -299,13 +299,13 @@ def build_checklist(
         },
         {
             "id": "ml_models_sbert",
-            "label": "SBERT model v2",
+            "label": "SBERT model v2 (Release v8)",
             "ok": models_sbert_ok,
             "required": True,
             "detail": (
                 "Installed — fine-tuned SBERT v2 → similarity_annotation (cosine)"
                 if models_sbert_ok
-                else "Missing — ./start.sh downloads it automatically (same as Cascade V8)"
+                else "Missing — ./start.sh downloads it with Cascade V8 (same Release v8.0.0)"
             ),
             "action": "./start.sh  (or: python scripts/download_models.py)" if not models_sbert_ok else None,
         },
@@ -461,7 +461,7 @@ def build_report(root: Path | None = None, cfg: dict | None = None) -> dict[str,
         if not models_sbert_ok:
             warnings.append(
                 "SBERT missing (similarity scores). "
-                "Run ./start.sh or: python scripts/download_models.py (Release v1.0.0)."
+                "Run ./start.sh or: python scripts/download_models.py (Release v8.0.0)."
             )
         if ollama["installed"] and ollama["running"] and rec_llm and not llm_ok:
             active = cfg.get("llm", {}).get("ollama", rec_llm["ollama"])

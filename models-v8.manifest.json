@@ -1,6 +1,6 @@
 {
   "version": "8.0.0",
-  "description": "Cascade V8 multi-OS: MiniLM + DeBERTa Large + Reranker undetermined (updated). Poids exclus de Git \u2014 distribu\u00e9s via GitHub Release.",
+  "description": "Cascade V8 + SBERT v2 multi-OS (une seule Release GitHub). Poids exclus de Git.",
   "github_release_tag": "v8.0.0",
   "required_free_gb": 7.0,
   "required_files": [

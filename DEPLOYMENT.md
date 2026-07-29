@@ -8,8 +8,7 @@ automatiquement au premier `./start.sh` / `start.ps1` / `start.bat`.
 
 | Release | Contenu | Tag |
 |---------|---------|-----|
-| Modèles de base | DeBERTa-base + SBERT + cross-encoder (~1,5 Go) | [v1.0.0](https://github.com/hugodury/annotation-tool-package-2/releases/tag/v1.0.0) |
-| **Cascade V8** | MiniLM + DeBERTa Large + Reranker undetermined (~4 Go) | [v8.0.0](https://github.com/hugodury/annotation-tool-package-2/releases/tag/v8.0.0) |
+| **Modèles (tout-en-un)** | SBERT v2 + MiniLM + DeBERTa Large + Reranker | [v8.0.0](https://github.com/hugodury/annotation-tool-package-2/releases/tag/v8.0.0) |
 
 Même procédure sur **Windows, macOS et Linux** — chemins relatifs `models/…`,
 pas de symlink absolu machine-dépendante.
@@ -23,7 +22,7 @@ pas de symlink absolu machine-dépendante.
 | Python 3.9+ | ✓ | ✓ | ✓ |
 | Ollama | [ollama.com](https://ollama.com/) | idem | idem |
 | RAM | 16 Go+ recommandés (Cascade + Qwen) ; 10 Go min. Qwen only | idem | idem |
-| Disque libre (1er lancement) | **~20 Go** (venv + v1 + v8 + Qwen + marge) | idem | idem |
+| Disque libre (1er lancement) | **~16–20 Go** (venv + Release v8 + Qwen + marge) | idem | idem |
 | Disque une fois installé | ~12–14 Go | idem | idem |
 
 ---
@@ -55,30 +54,29 @@ start.bat
 Le script `scripts/setup.py` :
 1. Crée le venv Python
 2. Installe PyTorch (CPU / CUDA / MPS selon la machine)
-3. Télécharge **Release v1.0.0** → `models/fine_tuned_*`
-4. Télécharge **Release v8.0.0** → `models/cascade_v8/` (meta + MiniLM + DeBERTa Large + Reranker reassembled)
-5. Démarre Ollama si besoin et pull Qwen 7B
-6. Lance l'app sur http://127.0.0.1:5000
+3. Télécharge **Release v8.0.0** → SBERT v2 + Cascade V8 (meta + MiniLM + DeBERTa Large + Reranker)
+4. Démarre Ollama si besoin et pull Qwen 7B
+5. Lance l'app sur http://127.0.0.1:5000
 
 Après ça, les modes **Qwen only**, **Cascade V8 + Qwen** et
-**Compare Qwen ↔ Cascade V8** fonctionnent ; le score **`similarity_annotation`** vient du **SBERT** (Release v1 / AI_annotation).
+**Compare Qwen ↔ Cascade V8** fonctionnent ; le score **`similarity_annotation`** vient du **SBERT v2**.
 
 ---
 
 ## Pourquoi les modèles ne sont pas dans Git ?
 
-| | Git | GitHub Release |
+| | Git | GitHub Release **v8.0.0** |
 |--|--|--|
-| Poids v1 (~1,5 Go) | exclus (`/models/` dans `.gitignore`) | `vldbench-models-v1.tar.gz` |
-| Poids V8 (~4 Go) | exclus | assets `vldbench-cascade-v8-*` |
+| SBERT v2 (~0,4 Go) | exclus (`/models/` dans `.gitignore`) | `vldbench-sbert-v2.tar.gz` |
+| Cascade V8 (~4 Go) | exclus | `vldbench-cascade-v8-*` |
 | Config / code | versionnés | — |
 
 Limite GitHub **2 Go / fichier** : le Reranker (~2,1 Go) est découpé en
 `.part00` / `.part01` puis réassemblé par `scripts/download_models_v8.py`.
 
 Manifests versionnés (sans poids) :
-- `models.manifest.json` — v1
-- `models-v8.manifest.json` — v8 (URLs + checksums SHA-256)
+- `models.manifest.json` — SBERT v2
+- `models-v8.manifest.json` — Cascade V8 (URLs + checksums SHA-256)
 
 ---
 
@@ -238,7 +236,7 @@ PY
 ## Checklist mainteneur avant de dire « ça marche multi-PC »
 
 1. [ ] `/models/` dans `.gitignore`
-2. [ ] Release **v1.0.0** + **v8.0.0** publiées sur GitHub
+2. [ ] Release **v8.0.0** publiée (SBERT v2 + Cascade V8)
 3. [ ] `models.manifest.json` + `models-v8.manifest.json` commités avec checksums
 4. [ ] Test `./start.sh` sur machine **vierge** (sans symlink local)
-5. [ ] Modes UI : Qwen only, DeBERTa+Qwen, Cascade V8+Qwen, Compare
+5. [ ] Modes UI : Qwen only, Cascade V8+Qwen, Compare

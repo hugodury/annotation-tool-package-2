@@ -61,7 +61,7 @@ def full_install_disk_gb(
     else:
         breakdown["modeles_cascade_v8"] = 7.0
 
-    # Fine-tuned SBERT (~418 Mo weights; from Release v1 / AI_annotation)
+    # Fine-tuned SBERT v2 (~418 Mo; Release v8.0.0)
     breakdown["modele_sbert"] = 0.5
 
     breakdown["venv_et_dependances"] = VENV_AND_DEPS_GB

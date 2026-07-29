@@ -2065,7 +2065,7 @@ def _run_batch_inner(
                 if mode == CASCADE_MODE_V8_QWEN or mode == CASCADE_MODE_COMPARE:
                     eng.ensure_v8()
                 load_box["engine"] = eng
-                # Trained SBERT (AI_annotation / Release v1) — similarity scores only
+                # Trained SBERT v2 (Release v8.0.0) — similarity scores only
                 load_box["sbert"] = app_mod.get_sbert_model()
             except BaseException as e:
                 load_errors.append(e)

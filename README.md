@@ -13,9 +13,7 @@ Interface web **entièrement en anglais**. Compatible **Windows, macOS et Linux*
 | Ressource | Lien |
 |-----------|------|
 | **Dépôt GitHub** | https://github.com/hugodury/annotation-tool-package-2 |
-| **Release Cascade V8 (v8.0.0)** | https://github.com/hugodury/annotation-tool-package-2/releases/tag/v8.0.0 |
-| **Release SBERT v2 (tag v1.0.0)** | https://github.com/hugodury/annotation-tool-package-2/releases/tag/v1.0.0 |
-| **Workspace modèles / cascade CLI** | https://github.com/Cespriet/AI_annotation |
+| **Release modèles (tout-en-un)** | https://github.com/hugodury/annotation-tool-package-2/releases/tag/v8.0.0 |
 | **Déploiement multi-OS** | [DEPLOYMENT.md](DEPLOYMENT.md) |
 
 ```bash
@@ -24,13 +22,11 @@ cd annotation-tool-package-2
 ```
 
 > **PC neuf / clone GitHub** : **une seule commande** (tableau ci-dessous) suffit.
-> Elle crée le venv, installe PyTorch + deps, télécharge **tous les modèles**
-> (**SBERT v2** + **Cascade V8** : MiniLM, DeBERTa Large, **Reranker undetermined** à jour),
+> Elle crée le venv, installe PyTorch + deps, télécharge **tous les modèles** depuis
+> **une seule Release** [`v8.0.0`](https://github.com/hugodury/annotation-tool-package-2/releases/tag/v8.0.0)
+> (**SBERT v2** + Cascade : MiniLM, DeBERTa Large, Reranker),
 > démarre Ollama et tire Qwen — **identique Windows / macOS / Linux**.
 > **1er lancement** : 15–45 min (réseau / machine). Internet requis **une seule fois**.
-> Les poids ML **ne sont pas dans Git** — Releases
-> [`v1.0.0`](https://github.com/hugodury/annotation-tool-package-2/releases/tag/v1.0.0) (SBERT v2) et
-> [`v8.0.0`](https://github.com/hugodury/annotation-tool-package-2/releases/tag/v8.0.0) (Cascade, Reranker à jour).
 > **Labels** = Duo / Reranker / Qwen ; **`similarity_annotation`** = cosine **SBERT v2**.
 
 ---
@@ -47,7 +43,7 @@ cd annotation-tool-package-2
 Puis ouvrir **http://127.0.0.1:5000**
 
 **Prérequis manuels** : Python **3.9+** et [Ollama](https://ollama.com/) (le script détecte / tire le LLM).  
-**Rien d’autre à télécharger à la main** : SBERT v2 + Cascade V8 (dont le nouveau Reranker) arrivent via les Releases GitHub.
+**Rien d’autre à télécharger à la main** : SBERT v2 + Cascade V8 arrivent tous via la Release **v8.0.0**.
 
 > Après modification HTML / JS / Python : **redémarrer Flask** si le serveur tournait déjà.
 
@@ -76,7 +72,7 @@ Au chargement (`/api/system-check`) :
 |------|--------|------|
 | System / Python / PyTorch / sentence-transformers ≥ 5.5 | oui | Runtime |
 | **Cascade V8 models (Release v8)** | oui | Duo + Reranker pour Cascade / Compare |
-| **SBERT model v2** | oui | Cosine → `similarity_annotation` (fine-tuned v2) |
+| **SBERT model v2 (Release v8)** | oui | Cosine → `similarity_annotation` |
 | Ollama installé + running | oui | Serveur LLM |
 | **LLM qwen2.5:7b-instruct** | oui | Qwen only + dernier étage Cascade + Compare |
 | RAM ≥ 16 Go (Cascade) | **non** | Recommandé seulement — n’empêche pas Run Model |
@@ -176,15 +172,19 @@ Protocole : `cascade/protocol.md` · Few-shot : `cascade/few_shot.json` · Post-
 
 ---
 
-## Modèles ML — Releases multi-OS (hors Git)
+## Modèles ML — une Release multi-OS (hors Git)
 
 `.gitignore` → `/models/`.  
-**Une commande** (`./start.sh` / `start.bat` / `start.ps1`) télécharge **tout** ce qui est requis.
+**Une commande** (`./start.sh` / `start.bat` / `start.ps1`) télécharge **tout** depuis
+**[Release v8.0.0](https://github.com/hugodury/annotation-tool-package-2/releases/tag/v8.0.0)** :
 
-| Release | Tag | Contenu actuel | Requis Run Model ? |
-|---------|-----|----------------|-------------------|
-| **Cascade V8** | [v8.0.0](https://github.com/hugodury/annotation-tool-package-2/releases/tag/v8.0.0) | MiniLM + DeBERTa Large + **Reranker undetermined (nouvelle version)** | **Oui** (labels) |
-| **SBERT v2** | [v1.0.0](https://github.com/hugodury/annotation-tool-package-2/releases/tag/v1.0.0) | **SBERT fine-tuned v2** (~0,4 Go) | **Oui** (`similarity_annotation`) |
+| Asset | Contenu | Rôle |
+|-------|---------|------|
+| `vldbench-sbert-v2.tar.gz` | SBERT fine-tuned v2 | `similarity_annotation` |
+| `vldbench-cascade-v8-meta.tar.gz` | config + tokenizers | Cascade |
+| `vldbench-cascade-v8-minilm.safetensors` | MiniLM v7 | Duo |
+| `vldbench-cascade-v8-deberta.safetensors` | DeBERTa Large v8.1 | Duo |
+| `*.reranker.safetensors.partXX` | Reranker undetermined | Auto undetermined |
 
 ```text
 models/
@@ -195,15 +195,14 @@ models/
 ```
 
 Reranker > 2 Go GitHub → `.part00` / `.part01` réassemblés auto.  
-Checksums : `models-v8.manifest.json` / `models.manifest.json`. Miroirs : `CASCADE_V8_DOWNLOAD_URL_*` (`.env.example`).
+Checksums : `models.manifest.json` + `models-v8.manifest.json`.
 
 ```bash
 # déjà appelé par ./start.sh — utile en dépannage :
-python scripts/download_models.py      # SBERT v2 (Release v1)
-python scripts/download_models_v8.py   # Cascade V8 (+ Reranker à jour)
+python scripts/download_models.py      # SBERT v2 + Cascade V8 (Release v8.0.0)
 ```
 
-Sans V8 : **Cascade** / **Compare** indisponibles. Sans SBERT : Run Model bloqué (checklist). **Qwen** via Ollama reste requis pour tous les modes.
+Sans modèles V8 : **Cascade** / **Compare** indisponibles. Sans SBERT : Run Model bloqué (checklist). **Qwen** via Ollama reste requis pour tous les modes.
 
 ---
 
@@ -294,8 +293,8 @@ annotation-tool-package-2/
 | Problème | Piste |
 |----------|-------|
 | Run Model grisé | Checklist : Cascade V8, **SBERT v2**, Ollama, Qwen |
-| Cascade / Compare KO | `python scripts/download_models_v8.py` |
-| SBERT / similarity KO | `python scripts/download_models.py` (Release v1 = SBERT v2) |
+| Cascade / Compare KO | `python scripts/download_models_v8.py` (ou `download_models.py`) |
+| SBERT / similarity KO | `python scripts/download_models.py` (Release v8.0.0) |
 | RAM ○ à 15 Go | Normal — reco Cascade ≥16 Go, **non bloquant** |
 | Pas d’estimation | 1er run du mode — calibrer puis réessayer |
 | Fichiers hors storage | Rouvrir le JSON (copie auto) |
