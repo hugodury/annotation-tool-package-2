@@ -215,11 +215,15 @@ def _set_upload_folder(raw: str) -> Path:
 
 
 def _path_in_storage(path: Path) -> bool:
+    """True only if the file sits directly in the storage folder (not a subfolder).
+
+    Choosing Desktop as storage must not treat Desktop/Stage/.../uploads/foo.json
+    as already stored — otherwise annotations keep writing into nested uploads/.
+    """
     storage = Path(app.config["UPLOAD_FOLDER"]).resolve()
     try:
-        path.expanduser().resolve().relative_to(storage)
-        return True
-    except (OSError, ValueError):
+        return path.expanduser().resolve().parent == storage
+    except OSError:
         return False
 
 

@@ -153,6 +153,8 @@ Calibration : `instance/estimate_calibration.json` (par mode). Survit aux redém
 
 - **Storage folder** (Browse) : dossier des JSON annotés (défaut `uploads/`, ou Bureau, etc.).
 - Fichier ouvert ailleurs → **copié** dans le storage avant annotation.
+- Un fichier n’est considéré « déjà dans le storage » que s’il est **directement** dans ce dossier (pas dans un sous-dossier). Ex. storage = `~/Desktop` et JSON dans `~/Desktop/Stage/.../uploads/` → copie vers `~/Desktop/`.
+- Même logique quel que soit le chemin choisi.
 - Sélecteurs natifs OS (zenity / Finder / PowerShell + tkinter).
 - Verrouillage : `ANNOTATION_DATA_DIR` dans `.env`.
 
