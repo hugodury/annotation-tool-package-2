@@ -12,7 +12,7 @@
   "checksums": {
     "models/cascade_v8/models/minilm_full_v7/model.safetensors": "e715fb3f74412ebc16d0e309e9ded52f4df6bc6c071bf58ed670b896d3afa0ae",
     "models/cascade_v8/models/deberta_large_v8.1/model.safetensors": "7f2ab25a66ed6fa11bbd44bbca3d65a827555f0f0680576516427f077f4002dc",
-    "models/cascade_v8/models/reranker_undetermined_v8/model.safetensors": "bd96f9c2f255e87a1a92c713c516aa59a933b31e66fb37a6e9152fae07277c55"
+    "models/cascade_v8/models/reranker_undetermined_v8/model.safetensors": "eded82d378e1baca7c1f03a62029084a76209316a0cd5d3f3d4a70d2040ddd61"
   },
   "archives": [
     {

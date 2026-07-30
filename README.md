@@ -60,7 +60,7 @@ Puis ouvrir **http://127.0.0.1:5000**
 | Disque (déjà installé) | espace libre restant peut être faible (normal) |
 | GPU | Optionnel. DeBERTa Large (Cascade) tourne en **CPU** (stabilité) |
 
-Le script installe : venv, PyTorch (CPU / CUDA / MPS), **SBERT v2** (similarité) + **Cascade V8** (MiniLM + DeBERTa Large + Reranker undetermined à jour), pull Qwen.
+Le script installe : venv, PyTorch (CPU / CUDA / MPS), **SBERT v2** (similarité) + **Cascade V8** (MiniLM + DeBERTa Large + **Reranker undetermined amélioré**), pull Qwen.
 
 ---
 
@@ -186,7 +186,7 @@ Protocole : `cascade/protocol.md` · Few-shot : `cascade/few_shot.json` · Post-
 | `vldbench-cascade-v8-meta.tar.gz` | config + tokenizers | Cascade |
 | `vldbench-cascade-v8-minilm.safetensors` | MiniLM v7 | Duo |
 | `vldbench-cascade-v8-deberta.safetensors` | DeBERTa Large v8.1 | Duo |
-| `*.reranker.safetensors.partXX` | Reranker undetermined | Auto undetermined |
+| `*.reranker.safetensors.partXX` | **Reranker undetermined (version améliorée)** | Auto undetermined |
 
 ```text
 models/
@@ -196,6 +196,7 @@ models/
     └── models/{minilm_full_v7,deberta_large_v8.1,reranker_undetermined_v8}/
 ```
 
+Le dossier `reranker_undetermined_v8` contient la **version améliorée** (remplace l’ancien poids).  
 Reranker > 2 Go GitHub → `.part00` / `.part01` réassemblés auto.  
 Checksums : `models.manifest.json` + `models-v8.manifest.json`.
 

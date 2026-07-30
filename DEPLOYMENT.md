@@ -8,7 +8,7 @@ automatiquement au premier `./start.sh` / `start.ps1` / `start.bat`.
 
 | Release | Contenu | Tag |
 |---------|---------|-----|
-| **Modèles (tout-en-un)** | SBERT v2 + MiniLM + DeBERTa Large + Reranker | [v8.0.0](https://github.com/hugodury/annotation-tool-package-2/releases/tag/v8.0.0) |
+| **Modèles (tout-en-un)** | SBERT v2 + MiniLM + DeBERTa Large + Reranker amélioré | [v8.0.0](https://github.com/hugodury/annotation-tool-package-2/releases/tag/v8.0.0) |
 
 Même procédure sur **Windows, macOS et Linux** — chemins relatifs `models/…`,
 pas de symlink absolu machine-dépendante.
@@ -158,8 +158,8 @@ Assets attendus :
 | `vldbench-cascade-v8-meta.tar.gz` | `config.json` + tokenizers |
 | `vldbench-cascade-v8-minilm.safetensors` | MiniLM |
 | `vldbench-cascade-v8-deberta.safetensors` | DeBERTa Large |
-| `vldbench-cascade-v8-reranker.safetensors.part00` | Reranker (partie 1) |
-| `vldbench-cascade-v8-reranker.safetensors.part01` | Reranker (partie 2) |
+| `vldbench-cascade-v8-reranker.safetensors.part00` | Reranker amélioré (partie 1) |
+| `vldbench-cascade-v8-reranker.safetensors.part01` | Reranker amélioré (partie 2) |
 
 Committer **`models-v8.manifest.json`** (checksums) dans Git — **jamais** les `.safetensors`.
 
