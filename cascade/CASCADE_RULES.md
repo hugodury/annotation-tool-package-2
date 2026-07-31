@@ -49,7 +49,7 @@ Uniquement sur les paires **reject** du duo :
 
 - Score binaire sigmoid = P(undetermined)
 - Si `P ≥ 0.70` → **AUTO `undetermined`**
-- Sinon → encore **HUMAN_REVIEW** côté modèles
+- Sinon → **Qwen P3 + post-LLM** (pas de revue humaine ; en cas d’erreur LLM → `rejected`, retenté)
 
 ## Étape 3 — Qwen (app `v8_qwen`)
 
@@ -57,7 +57,7 @@ Si toujours pas auto après duo+reranker :
 
 1. Prompt **P3** (protocole + few-shot + HARD)
 2. **Post-LLM** déterministe (`postprocess_prediction`)
-3. Route app : `v8_qwen` (label écrit) ou `human` si erreur Ollama
+3. Route app : `v8_qwen` (label écrit). Échec Ollama → `rejected` (retry), **pas** de human review.
 
 ```text
 Pair
@@ -68,7 +68,7 @@ Pair
   Reranker undetermined ── P≥0.70? ──► undetermined (v8_reranker)
   │         │ non
   ▼
-  Qwen P3 + post-LLM ──► label (v8_qwen) ou revue humaine
+  Qwen P3 + post-LLM ──► label (v8_qwen)
 ```
 
 ## Fichiers

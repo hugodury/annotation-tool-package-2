@@ -7,7 +7,7 @@ Règles (config.json du package v8) :
   Rule 4 — Low Confidence     : sinon reject duo
   Rule 5 — Models Disagree    : argmax MiniLM ≠ argmax DeBERTa → reject duo
   Reranker — si reject duo et P(undetermined) >= reranker_threshold → AUTO undetermined
-  Sinon → HUMAN_REVIEW (à traiter par Qwen dans CascadeEngine)
+  Sinon → Qwen P3 + post-LLM (CascadeEngine) ; échec LLM → rejected (retry)
 """
 from __future__ import annotations
 
@@ -142,7 +142,7 @@ class CascadePredictor:
     def annotate_pairs(self, sentence_pairs: list[list[str] | tuple[str, str]]) -> list[dict]:
         """
         Cascade duo + reranker.
-        status: AUTO_ANNOTATED | HUMAN_REVIEW
+        status: AUTO_ANNOTATED | HUMAN_REVIEW (interne → Qwen dans CascadeEngine)
         """
         if not sentence_pairs:
             return []

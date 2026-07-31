@@ -1787,7 +1787,7 @@ def build_batch_summary(
             f"{routing_stats.get('deberta_auto', 0)} DeBERTa auto, "
             f"{routing_stats.get('deberta_ambiguous', 0)} DeBERTa ambiguous, "
             f"{routing_stats.get('consensus', 0)} LLM consensus",
-            f"{human} human review, {rejected} rejected",
+            f"{human} legacy-human / {rejected} rejected (retry)",
             f"Duration: {elapsed_label}",
         ],
     }
@@ -2353,8 +2353,8 @@ def _run_batch_inner(
                     target["annotated_by"] = "compare_disagree"
                     target["annotated_by_label"] = "Compare disagree — needs review"
                 elif route_name in {"human", "rejected"}:
-                    target["annotated_by"] = "review"
-                    target["annotated_by_label"] = "Needs human review"
+                    target["annotated_by"] = "retry"
+                    target["annotated_by_label"] = "Not final — retry next run"
                 if out.get("pipeline_compare"):
                     target["pipeline_compare"] = out["pipeline_compare"]
                     cmp = out["pipeline_compare"]

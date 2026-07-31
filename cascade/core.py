@@ -1560,14 +1560,16 @@ class CascadeEngine:
         result["llm_sim"] = llm_score
 
         if err:
+            # Cascade V8 n'a pas de revue humaine : échec LLM = retry au prochain run
             result["llm_error"] = err
-            result.update(route="human", requires_human_review=True)
+            result.update(route="rejected", requires_human_review=False, related=None)
             return result
 
         result.update(
             route="v8_qwen",
             related=llm_label,
             similarity_annotation=llm_score,
+            requires_human_review=False,
         )
         return result
 

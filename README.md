@@ -112,6 +112,7 @@ Pair (T_ref, T_n)
 
 **Qwen fait partie de la cascade** (dernier étage). Seuils dans `models/cascade_v8/config.json`.
 Règles : [`cascade/CASCADE_RULES.md`](cascade/CASCADE_RULES.md).
+**Pas de revue humaine** en mode Annotate Cascade : chaque paire sort via Duo, Reranker ou Qwen.
 
 **Qui a annoté ?** Chaque cible affiche un badge clair :
 
@@ -132,7 +133,8 @@ Lance **uniquement** ces deux pipelines :
 | Même label | `compare_agree` | Auto-annotation |
 | Labels différents | `compare_disagree` | Revue + détail side-by-side |
 
-Routes **non finales** (retentées au prochain run) : `human`, `rejected`, `compare_disagree`.
+Routes **non finales** (retentées au prochain run) : `rejected` (ex. erreur LLM), `compare_disagree`.
+Le mode Annotate Cascade n’a **pas** d’étage revue humaine.
 
 ---
 
