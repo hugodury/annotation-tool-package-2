@@ -71,14 +71,13 @@ Pair
   Qwen P3 + post-LLM ──► label (v8_qwen)
 ```
 
-## Fichiers
+## Fichiers (dans ce dépôt)
 
 | Fichier | Rôle |
 | :--- | :--- |
-| `predictor.py` | Référence collègue (duo + reranker) |
-| `config.json` | Seuils + chemins modèles |
-| `models/minilm_full_v7` | Cross-encoder 4 classes |
-| `models/deberta_large_v8.1` | Cross-encoder 4 classes (CPU) |
-| `models/reranker_undetermined_v8` | BGE reranker binaire undetermined |
-| `annotation-tool-package-2/cascade/v8_predictor.py` | Intégration app |
-| `annotation-tool-package-2/cascade/core.py` | Mode `v8_qwen` + Qwen |
+| `cascade/v8_predictor.py` | Duo + Reranker |
+| `cascade/core.py` | Mode `v8_qwen` + Qwen P3 + post-LLM |
+| `cascade/config.json` | LLM / run_model (seuils V8 : `models/cascade_v8/config.json`) |
+| `models/cascade_v8/models/minilm_full_v7` | Cross-encoder 4 classes (Release v8) |
+| `models/cascade_v8/models/deberta_large_v8.1` | Cross-encoder 4 classes, CPU |
+| `models/cascade_v8/models/reranker_undetermined_v8` | BGE binaire undetermined |

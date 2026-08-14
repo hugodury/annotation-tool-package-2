@@ -1,5 +1,6 @@
 {
     "news_id": "1",
+    "news": "news title 1",
     "news_title": "news title 1",
     "topic": "topic 1",
     "database": [

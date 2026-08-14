@@ -47,6 +47,39 @@ Puis ouvrir **http://127.0.0.1:5000**
 
 > Après modification HTML / JS / Python : **redémarrer Flask** si le serveur tournait déjà.
 
+Ce dépôt contient **uniquement le code de l’outil** (app, cascade, scripts d’install).  
+**Pas** de datasets perso, pas de JSON annotés, pas de poids ML (Release v8).  
+Les modèles se téléchargent au premier `./start.sh`.
+
+---
+
+## Format JSON d’entrée
+
+Une **liste** d’objets. Chaque objet = une **référence** ; `database` = les **cibles** à annoter.
+
+Le champ ancre lu par Run Model et l’UI est **`news`** (pas `news_title`).
+
+```json
+[
+  {
+    "news_id": "ref_001",
+    "news": "Headline or full text of the reference article",
+    "topic": "Politics",
+    "database": [
+      {
+        "news": "Headline or full text of a candidate article",
+        "topic": "Politics"
+      }
+    ]
+  }
+]
+```
+
+Exemples : `samples/sample1.json` … `sample4.json`.  
+Après Run Model, chaque cible reçoit notamment `related`, `similarity_annotation`, `cascade_route`, `annotated_by`.
+
+**Labels** : `supporting` · `against` · `undetermined` · `not_related` (`dismissed` = rejet humain d’une paire, jamais écrit par la cascade auto).
+
 ---
 
 ## Prérequis
@@ -282,8 +315,9 @@ Voir **[DEPLOYMENT.md](DEPLOYMENT.md)**.
 ```
 annotation-tool-package-2/
 ├── app.py
-├── cascade/          # core, v8_predictor, protocol, CASCADE_RULES.md
+├── cascade/          # core, v8_predictor, protocol P3, CASCADE_RULES.md
 ├── scripts/          # setup, download_models(+v8), run_model_job, system_check
+├── samples/          # JSON d’exemple (champ `news` + `database`)
 ├── templates/        # UI anglais
 ├── models/           # gitignored — SBERT v2 + cascade_v8 au 1er start
 ├── start.sh / start.bat / start.ps1

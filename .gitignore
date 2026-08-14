@@ -26,6 +26,14 @@ dist/
 /json
 reunion_vendredi_bilan.html
 
+# Personal datasets & eval artifacts (not part of the shareable tool)
+/data/
+data/
+docs/*.html
+cascade/protocol_claude.md
+scripts/averitec_to_cascade.py
+scripts/prepare_fever_submission.py
+
 # OS generated files
 .DS_Store
 .DS_Store?
