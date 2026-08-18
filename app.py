@@ -1,3 +1,29 @@
+"""Serveur Flask — interface web d'annotation VLDBench.
+
+Ce module expose l'API REST et les routes HTML de l'outil d'annotation.
+Il orchestre :
+- Le chargement paresseux des modèles ML (SBERT, CascadeEngine).
+- La gestion du storage folder (JSON annotés, backups).
+- Les sessions sauvegardées (``instance/saved_sessions.json``).
+- Le lancement et le suivi des jobs Run Model (thread background).
+- Les sélecteurs natifs OS (zenity / Finder / PowerShell).
+
+Bases de données / stockage :
+    instance/annotations.db
+        Cache SQLite (Flask-SQLAlchemy). Utilisé uniquement pour le cache
+        interne de l'app, pas pour stocker les labels finaux.
+    instance/storage_settings.json
+        Chemin du storage folder choisi par l'utilisateur.
+    instance/saved_sessions.json
+        Registre des sessions (nom, fichier, date) persistant entre redémarrages.
+    instance/estimate_calibration.json
+        Calibration du temps estimé Run Model par mode (qwen_only / v8_qwen).
+    <storage_folder>/<fichier>.json
+        Fichiers JSON annotés (format VLDBench : liste de références + database).
+        Chaque écriture est précédée d'une copie dans ``backups/``.
+    logs/run_model_session.log
+        Log de la session Run Model en cours.
+"""
 from flask import Flask, render_template, request, jsonify, send_file
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.utils import secure_filename
@@ -50,6 +76,14 @@ _dialog_lock = threading.Lock()
 
 
 def _format_elapsed(seconds: float) -> str:
+    """Formate une durée en secondes en chaîne lisible (ex. ``2 h 3 min 5 s``).
+
+    Args:
+        seconds: Durée en secondes (float).
+
+    Returns:
+        Chaîne formatée.
+    """
     s = int(round(seconds))
     if s < 60:
         return f"{s} s"
@@ -62,10 +96,27 @@ def _format_elapsed(seconds: float) -> str:
 
 
 def _elapsed_info(batch_start: float) -> dict:
+    """Retourne le temps écoulé depuis ``batch_start`` en secondes et en label.
+
+    Args:
+        batch_start: Timestamp de départ (``time.monotonic()``).
+
+    Returns:
+        Dict avec ``elapsed_seconds`` (float) et ``elapsed_label`` (str).
+    """
     elapsed = round(time.monotonic() - batch_start, 1)
     return {"elapsed_seconds": elapsed, "elapsed_label": _format_elapsed(elapsed)}
 
+
 def get_cascade_engine():
+    """Retourne (en le créant si nécessaire) l'instance globale de CascadeEngine.
+
+    Chargement paresseux : les modèles MiniLM, DeBERTa et Reranker ne sont
+    chargés qu'au premier appel. Thread-safe via le GIL Python.
+
+    Returns:
+        Instance unique de ``cascade.core.CascadeEngine``.
+    """
     global cascade_engine
     if cascade_engine is None:
         from cascade.core import CascadeEngine
@@ -74,6 +125,14 @@ def get_cascade_engine():
 
 
 def get_sbert_model():
+    """Retourne (en le créant si nécessaire) l'instance globale de SentenceTransformer.
+
+    Charge ``models/fine_tuned_sbert/`` (SBERT v2 fine-tuned VLDBench).
+    Utilisé exclusivement pour le calcul de ``similarity_annotation`` (cosine).
+
+    Returns:
+        Instance unique de ``sentence_transformers.SentenceTransformer``.
+    """
     global sbert_model
     if sbert_model is None:
         from sentence_transformers import SentenceTransformer
@@ -568,12 +627,12 @@ def resume_session():
         data = json.load(f)
     if isinstance(data, dict):
         data = [data]
-
+        
     sync_file_annotations(latest_file, data, source='import')
     db.session.commit()
     data = enrich_data_with_status(latest_file, data)
     processed_ids = get_processed_ids_for_file(latest_file)
-
+        
     return jsonify({'data': data, 'processed_ids': list(processed_ids), 'filename': latest_file})
 
 @app.route('/download', methods=['GET'])
@@ -592,7 +651,7 @@ def save_annotation():
     req = request.json or {}
     news_id = str(req.get('news_id', ''))
     annotation = req.get('annotation')
-
+    
     if not news_id:
         return jsonify({'error': 'Missing news_id.'}), 400
     if not isinstance(annotation, list):
@@ -620,9 +679,9 @@ def save_annotation():
                         f'{len(db_list)} expected.'
                     ),
                 }), 400
-            for i, ann in enumerate(annotation):
-                db_list[i]['similarity_annotation'] = ann.get('similarity')
-                db_list[i]['related'] = ann.get('relation')
+                for i, ann in enumerate(annotation):
+                    db_list[i]['similarity_annotation'] = ann.get('similarity')
+                    db_list[i]['related'] = ann.get('relation')
             updated_item = item
             break
     if updated_item is None:
@@ -630,11 +689,11 @@ def save_annotation():
 
     lock = file_lock_for(file_path)
     with lock:
-        with open(file_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=4)
+    with open(file_path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=4)
 
     sync_reference_to_db(original_filename, updated_item, source='manual')
-    db.session.commit()
+        db.session.commit()
     status = reference_status_from_item(updated_item)
     return jsonify({
         'message': 'Annotation saved successfully',
@@ -852,12 +911,12 @@ def _resolve_current_filename() -> str | None:
     file_path = _resolve_current_file_path()
     if file_path:
         return file_path.name
-    upload_dir = app.config['UPLOAD_FOLDER']
+        upload_dir = app.config['UPLOAD_FOLDER']
     if not os.path.isdir(upload_dir):
         return None
-    files = [f for f in os.listdir(upload_dir) if f.endswith('.json')]
-    if files:
-        files.sort(key=lambda x: os.path.getmtime(os.path.join(upload_dir, x)), reverse=True)
+        files = [f for f in os.listdir(upload_dir) if f.endswith('.json')]
+        if files:
+            files.sort(key=lambda x: os.path.getmtime(os.path.join(upload_dir, x)), reverse=True)
         latest = files[0]
         app.config['current_filename'] = latest
         app.config['current_file_path'] = str(Path(upload_dir) / latest)

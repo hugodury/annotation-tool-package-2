@@ -1,13 +1,24 @@
-"""Cascade V8 collègue : Duo Zero Faute (MiniLM + DeBERTa) → Reranker → (Qwen hors de ce module).
+"""Cascade V8 — Duo Zero Faute (MiniLM + DeBERTa) et Reranker undetermined.
 
-Règles (config.json du package v8) :
-  Rule 1 — Against Specialist : P(against) > against_binary_threshold → AUTO against
-  Rule 2 — Undetermined Trap  : P(undetermined) > undetermined_rejection_threshold → reject duo
-  Rule 3 — Global Confidence  : max_prob >= global_tau et accord MiniLM/DeBERTa → AUTO
-  Rule 4 — Low Confidence     : sinon reject duo
-  Rule 5 — Models Disagree    : argmax MiniLM ≠ argmax DeBERTa → reject duo
-  Reranker — si reject duo et P(undetermined) >= reranker_threshold → AUTO undetermined
-  Sinon → Qwen P3 + post-LLM (CascadeEngine) ; échec LLM → rejected (retry)
+Qwen (dernier étage) est géré en aval par ``cascade.core.CascadeEngine``.
+
+Règles appliquées dans l'ordre par ``annotate_pairs`` :
+    Rule 5 — Models Disagree    : argmax(MiniLM) ≠ argmax(DeBERTa) → rejet duo.
+    Rule 1 — Against Specialist : P(against) > ``against_binary_threshold`` → AUTO against.
+    Rule 2 — Undetermined Trap  : P(undetermined) > ``undetermined_rejection_threshold`` → rejet.
+    Rule 3 — Global Confidence  : max(P_ensemble) ≥ ``global_tau`` et accord → AUTO argmax.
+    Rule 4 — Low Confidence     : sinon → rejet.
+    Reranker                    : si rejet duo et P(undetermined) ≥ ``reranker_undetermined_threshold``
+                                  → AUTO undetermined ; sinon status HUMAN_REVIEW (→ Qwen).
+
+Configuration :
+    Lue depuis ``models/cascade_v8/config.json`` (chemin résolu par ``default_v8_root()``
+    ou variable d'environnement ``CASCADE_V8_ROOT``).
+
+Modèles chargés :
+    - ``minilm_full_v7``       : MiniLM v7, 6 couches RoBERTa, 4 classes (fast device).
+    - ``deberta_large_v8.1``   : DeBERTa-v3 Large, 24 couches, 4 classes (CPU forcé).
+    - ``reranker_undetermined_v8`` : XLM-RoBERTa Large binaire (fast device).
 """
 from __future__ import annotations
 
@@ -30,7 +41,16 @@ except ImportError as e:  # pragma: no cover
 
 
 def default_v8_root() -> Path:
-    """Racine du package collègue (models + config)."""
+    """Résout la racine du package modèles Cascade V8.
+
+    Cherche dans l'ordre :
+        1. Variable d'environnement ``CASCADE_V8_ROOT`` (si définie).
+        2. ``<repo>/models/cascade_v8/`` (lien symbolique ou dossier direct).
+        3. Workspace ``AI_annotation/cascade_annotation_v8_complete/…``.
+
+    Returns:
+        Chemin résolu vers la racine V8 (peut ne pas exister si non installé).
+    """
     here = Path(__file__).resolve().parent
     env = os.environ.get("CASCADE_V8_ROOT", "").strip()
     candidates = [
@@ -55,9 +75,33 @@ def default_v8_root() -> Path:
 
 
 class CascadePredictor:
-    """Duo Zero Faute + Reranker undetermined (sans Qwen — Qwen est l'étage suivant)."""
+    """Duo Zero Faute (MiniLM + DeBERTa) suivi du Reranker undetermined.
+
+    Qwen (dernier étage de la cascade) est délégué à ``CascadeEngine`` dans
+    ``cascade.core`` ; ce prédicteur ne gère que les étages pré-LLM.
+
+    Attributes:
+        config: Dictionnaire de configuration issu de ``config.json``.
+        class_names: Noms des 4 classes dans l'ordre du modèle
+            (against, not_related, supporting, undetermined).
+        weights: Poids de l'ensemble Duo (``minilm_v7`` et ``deberta_large_v8``).
+        thresholds: Seuils de décision (``global_tau``, ``against_binary_threshold``, …).
+        base_dir: Dossier racine contenant les sous-dossiers de modèles.
+        models: Dictionnaire ``{nom: CrossEncoder}`` pour les 3 modèles chargés.
+        device_fast: Périphérique d'inférence rapide (``cuda`` | ``mps`` | ``cpu``).
+    """
 
     def __init__(self, config_path: str | Path | None = None):
+        """Charge la configuration et les trois modèles (MiniLM, DeBERTa, Reranker).
+
+        Args:
+            config_path: Chemin explicite vers ``config.json``. Si ``None``,
+                utilise ``default_v8_root() / "config.json"``.
+
+        Raises:
+            FileNotFoundError: Si ``config.json`` ou l'un des poids est absent.
+            ImportError: Si ``sentence-transformers`` n'est pas installé.
+        """
         root = default_v8_root()
         cfg_path = Path(config_path) if config_path else root / "config.json"
         if not cfg_path.is_file():
@@ -104,6 +148,20 @@ class CascadePredictor:
         )
 
     def _get_model_probs(self, model, sentence_pairs: list) -> np.ndarray:
+        """Calcule les probabilités softmax pour un modèle cross-encoder.
+
+        Gère trois cas de sortie :
+        - Logit scalaire (binaire) → converti en 4 colonnes via sigmoïde.
+        - Logits 3 classes (NLI) → remappés vers 4 classes VLDBench.
+        - Logits 4 classes → softmax direct.
+
+        Args:
+            model: Instance ``CrossEncoder`` à appeler.
+            sentence_pairs: Liste de paires ``[ancre, cible]``.
+
+        Returns:
+            Tableau NumPy de forme ``(N, 4)`` avec les probabilités par classe.
+        """
         logits = model.predict(
             sentence_pairs,
             batch_size=32,
@@ -131,6 +189,18 @@ class CascadePredictor:
         return probs
 
     def predict_duo_probabilities(self, sentence_pairs: list):
+        """Calcule les probabilités ensemble MiniLM + DeBERTa (Duo).
+
+        L'ensemble est une combinaison linéaire pondérée :
+        ``P_ensemble = weights[minilm] * P_mini + weights[deberta] * P_large``.
+
+        Args:
+            sentence_pairs: Liste de paires ``[ancre, cible]``.
+
+        Returns:
+            Tuple ``(p_ensemble, p_minilm, p_deberta)`` — trois tableaux
+            NumPy de forme ``(N, 4)``.
+        """
         p_mini = self._get_model_probs(self.models["minilm_v7"], sentence_pairs)
         p_large = self._get_model_probs(self.models["deberta_large_v8"], sentence_pairs)
         p_ensemble = (
@@ -140,9 +210,21 @@ class CascadePredictor:
         return p_ensemble, p_mini, p_large
 
     def annotate_pairs(self, sentence_pairs: list[list[str] | tuple[str, str]]) -> list[dict]:
-        """
-        Cascade duo + reranker.
-        status: AUTO_ANNOTATED | HUMAN_REVIEW (interne → Qwen dans CascadeEngine)
+        """Applique le Duo Zero Faute puis le Reranker sur une liste de paires.
+
+        Chaque paire produit un dict avec les champs :
+            ``index``, ``status`` (AUTO_ANNOTATED | HUMAN_REVIEW), ``label``,
+            ``confidence``, ``probabilities``, ``minilm_label``, ``deberta_label``,
+            ``rule_triggered``, ``stage``, ``reranker_undetermined_prob`` (si rejet duo).
+
+        Les paires avec ``status == HUMAN_REVIEW`` après le Reranker sont
+        transmises à Qwen par ``CascadeEngine`` (hors de cette méthode).
+
+        Args:
+            sentence_pairs: Liste de paires ``[ancre, cible]`` ou ``(ancre, cible)``.
+
+        Returns:
+            Liste de dicts de résultats, un par paire, dans le même ordre.
         """
         if not sentence_pairs:
             return []
@@ -216,4 +298,13 @@ class CascadePredictor:
         return results
 
     def annotate_one(self, anchor: str, target: str) -> dict:
+        """Raccourci pour annoter une seule paire (ancre, cible).
+
+        Args:
+            anchor: Texte de l'article de référence.
+            target: Texte de l'article candidat.
+
+        Returns:
+            Dict de résultat identique à un élément de ``annotate_pairs``.
+        """
         return self.annotate_pairs([[anchor, target]])[0]

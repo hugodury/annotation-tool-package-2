@@ -42,3 +42,6 @@ scripts/prepare_fever_submission.py
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Canvas Cursor (données analyse, non publiables)
+docs/canvases/

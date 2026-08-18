@@ -119,6 +119,15 @@ En perspective système\,: le passage d'une évaluation hold-out $\sim$80\,\% (a
 
 Une analyse par topic montre que \textbf{Politics} concentre beaucoup d'erreurs en valeur absolue (107/131), mais cela reflète surtout son \textbf{poids dans le corpus} ($\sim$52\,\% des paires). Les taux d'erreur des autres topics restent généralement bas (souvent $<$4\,\%\,; Sports et Technology à 0\,\% sur ce gold). Autrement dit\,: les échecs ne s'expliquent pas principalement par un «\,sujet difficile\,» isolé\,; ils sont \textbf{structurels} (frontière \texttt{supporting}/\texttt{undetermined}, design du Reranker, post-SBERT), avec une répartition relativement homogène hors effet de volume Politics.
 
+\paragraph{Against scraping (Guillaume).}
+Pour tester les performances du modèle sur la classe \texttt{against}, un gold dédié a été construit sur les batchs scraping~855 et~890. Règle\,: $\ge$\,3 votes \texttt{against} parmi 6~annotateurs (labels \texttt{dismissed} / vides ignorés). \textbf{121}~paires sont ainsi gardées (batch~855\,: 99\,; batch~890\,: 22). Sur ce sous-ensemble, la cascade V8 (métriques \emph{simulées}) atteint une accuracy d'environ \textbf{96{,}7\,\%} (4~erreurs, F1~$\approx$\,0{,}967\,; soit 117/121 bien détectés).
+
+\paragraph{Essais de reformulation du prompt Qwen.}
+Toujours sur le gold VLDBench $\ge$\,3/6 (2\,257~paires), la baseline P3 reste à \textbf{94{,}2\,\%} d'accuracy (F1$_w$~0{,}935\,; F1$_m$~0{,}517\,; 131~erreurs). Plusieurs variantes ont été testées\,: protocole raccourci (93{,}1\,\%\,/\,0{,}922), réécriture structurée via Claude (93{,}8\,\%\,/\,0{,}930), few-shots modifiés (92{,}8\,\%\,/\,0{,}918), puis raccourci~+~few-shots (92{,}4\,\%\,/\,0{,}912). À chaque changement, \textbf{accuracy et F1 baissent}. Verdict\,: aucune amélioration\,; on conserve le système actuel (P3).
+
+\paragraph{Gold VLDBench élargi ($\ge$\,3/6).}
+Afin de vérifier si les métriques évoluent en augmentant le dataset, le gold a été recalculé avec 6~annotateurs (batchs~1--3)\,: \textbf{3\,015}~paires gardées (556~références), soit $+758$ par rapport aux $\sim$2\,257. En simulation cascade, l'accuracy reste \textbf{quasi inchangée} (94{,}1\,\% vs 94{,}2\,\%\,; F1$_w$ 0{,}933 vs 0{,}935). Augmenter le gold ne fait donc presque pas bouger Acc\,/\,F1.
+
 \subsection*{Synthèse}
 
 \begin{enumerate}

@@ -1,4 +1,23 @@
-"""Logique cascade DeBERTa-v3 -> LLM (P3) -> humain / rejet."""
+"""Logique principale du pipeline cascade VLDBench.
+
+Ce module orchestre les trois étages d'annotation automatique :
+    1. **Duo Zero Faute** (MiniLM v7 + DeBERTa Large v8.1, via ``v8_predictor``).
+    2. **Reranker undetermined** (XLM-RoBERTa binaire).
+    3. **Qwen 2.5-7B** via Ollama (prompt P3 + post-traitement métier).
+
+Il expose également les fonctions utilitaires partagées entre ``app.py``
+et ``run_model_job.py`` : normalisation des modes, chargement de la config,
+guards lexicaux anti-faux-NR (``enforce_label_sim_consistency``), comparaison
+des pipelines en mode Compare, et la classe ``CascadeEngine`` qui encapsule
+le cycle complet de décision pour une paire (ancre, cible).
+
+Bases de données / persistance utilisées :
+    - ``cascade/config.json``    : seuils, profils LLM, chemins modèles.
+    - ``cascade/protocol.md``    : prompt système P3 envoyé à Qwen.
+    - ``cascade/few_shot.json``  : exemples few-shot injectés dans le prompt.
+    - ``cascade/post_llm_regles.txt`` : règles de correction post-LLM.
+    - Ollama REST API            : inférence LLM locale (``/api/generate``).
+"""
 from __future__ import annotations
 
 import json
@@ -60,7 +79,18 @@ OLLAMA_CANCEL_POLL_SEC = 0.2
 
 
 def effective_related(route_out: dict) -> str | None:
-    """Label final auto-annote pour un resultat de pipeline, ou None."""
+    """Retourne le label auto-annoté final d'un résultat de pipeline, ou ``None``.
+
+    Seules les routes considérées comme des décisions finales (pas de revue
+    humaine nécessaire) renvoient un label non nul.
+
+    Args:
+        route_out: Dictionnaire de sortie du pipeline pour une paire.
+
+    Returns:
+        Label annoté (``"supporting"``, ``"against"``, …) ou ``None`` si la
+        paire requiert une revue humaine ou a été rejetée.
+    """
     route = route_out.get("route")
     if route in {
         "llm_auto",
@@ -77,10 +107,19 @@ def effective_related(route_out: dict) -> str | None:
 
 
 def compare_related(route_out: dict) -> str | None:
-    """Label comparable en mode Compare (inclut la proposition LLM si human/rejected).
+    """Label comparable en mode Compare, incluant la proposition LLM non validée.
 
-    Sans cela, cascade→human compte toujours comme désaccord même quand
-    Qwen-only et Qwen-cascade ont le même llm_pred.
+    En mode Compare, si la cascade a produit un ``llm_pred`` sans qu'il soit
+    validé (route ``human`` ou ``rejected``), ce label est quand même utilisé
+    pour la comparaison avec Qwen-only, évitant de compter comme désaccord
+    une paire où les deux pipelines ont prédit la même chose.
+
+    Args:
+        route_out: Dictionnaire de sortie du pipeline pour une paire.
+
+    Returns:
+        Label effectif pour la comparaison, ou ``None`` si aucun label
+        n'est disponible.
     """
     auto = effective_related(route_out)
     if auto is not None:
@@ -92,7 +131,14 @@ def compare_related(route_out: dict) -> str | None:
 
 
 def cascade_decision_source(cascade_out: dict) -> str:
-    """Qui a produit le label final: 'deberta' | 'v8' | 'qwen' | 'unknown'."""
+    """Identifie quel étage a produit le label final d'une paire.
+
+    Args:
+        cascade_out: Dictionnaire de sortie du pipeline cascade pour une paire.
+
+    Returns:
+        Une des valeurs ``"deberta"``, ``"v8"``, ``"qwen"`` ou ``"unknown"``.
+    """
     route = cascade_out.get("route")
     if route in {"deberta_auto", "deberta_ambiguous", "v8_duo", "v8_reranker"}:
         return "deberta" if route.startswith("deberta") else "v8"
@@ -125,7 +171,25 @@ def cascade_source_label(source: str | None) -> str:
 
 
 def build_pipeline_compare(qwen_out: dict, cascade_out: dict) -> dict:
-    """Compare Qwen-only vs Cascade V8+Qwen (même schéma clé `deberta_qwen` = côté cascade)."""
+    """Construit le résultat du mode Compare (Qwen-only vs Cascade V8+Qwen).
+
+    Les deux pipelines sont exécutés indépendamment ; cette fonction fusionne
+    leurs sorties en un seul objet exploitable par l'UI et ``run_model_job``.
+
+    Args:
+        qwen_out: Sortie du pipeline Qwen-only pour une paire.
+        cascade_out: Sortie du pipeline Cascade V8+Qwen pour la même paire.
+
+    Returns:
+        Dict avec les clés :
+            ``qwen_only``            : résumé pipeline Qwen.
+            ``deberta_qwen`` / ``cascade`` : résumé pipeline Cascade (alias historique).
+            ``agree``                : booléen, accord entre les deux labels.
+            ``faster``               : ``"cascade"`` | ``"qwen"`` | ``"tie"``.
+            ``duration_delta_s``     : écart de durée en secondes.
+            ``cascade_source``       : étage décideur (``"v8"`` | ``"qwen"``).
+            ``cascade_source_label`` : libellé lisible de l'étage décideur.
+    """
     qwen_rel = compare_related(qwen_out)
     cascade_rel = compare_related(cascade_out)
     agree = (
@@ -187,6 +251,17 @@ def build_pipeline_compare(qwen_out: dict, cascade_out: dict) -> dict:
 
 
 def normalize_cascade_mode(mode: str | None) -> str:
+    """Normalise un identifiant de mode cascade vers sa valeur canonique.
+
+    Gère les alias historiques (ex. ``deberta_qwen`` → ``v8_qwen``) et
+    replie les valeurs inconnues sur ``qwen_only``.
+
+    Args:
+        mode: Identifiant de mode brut (peut être ``None`` ou en majuscules).
+
+    Returns:
+        Un des trois modes valides : ``"qwen_only"``, ``"v8_qwen"``, ``"compare"``.
+    """
     value = (mode or CASCADE_MODE_QWEN_ONLY).strip().lower()
     if value in LEGACY_CASCADE_MODE_ALIASES:
         return LEGACY_CASCADE_MODE_ALIASES[value]
@@ -196,13 +271,28 @@ def normalize_cascade_mode(mode: str | None) -> str:
 
 
 def load_config() -> dict:
+    """Charge ``cascade/config.json`` avec les surcharges de variables d'environnement.
+
+    Returns:
+        Dictionnaire de configuration fusionné (config.json + .env overrides).
+    """
     with open(CASCADE_DIR / "config.json", encoding="utf-8") as f:
         cfg = json.load(f)
     return apply_env_overrides(cfg)
 
 
 def apply_env_overrides(cfg: dict) -> dict:
-    """Surcharges documentées dans .env.example (sans modifier config.json)."""
+    """Applique les surcharges de variables d'environnement sur la config.
+
+    Variables reconnues : ``OLLAMA_HOST``, ``OLLAMA_LLM_MODEL``.
+    Ne modifie pas ``config.json`` sur disque.
+
+    Args:
+        cfg: Dictionnaire de configuration de base (issu de ``config.json``).
+
+    Returns:
+        Nouvelle copie du dictionnaire avec les surcharges appliquées.
+    """
     cfg = json.loads(json.dumps(cfg))
     host = os.environ.get("OLLAMA_HOST", "").strip()
     if host:
@@ -215,8 +305,21 @@ def apply_env_overrides(cfg: dict) -> dict:
     return cfg
 
 
-def load_protocol() -> str:
-    """Unique protocole P3 : cascade/protocol.md (complet et concis)."""
+def load_protocol(prompt_id: str = "P3") -> str:
+    """Charge le texte du protocole (prompt système) pour Qwen.
+
+    Args:
+        prompt_id: Identifiant du prompt. ``"P3"`` (défaut) charge
+            ``cascade/protocol.md`` ; ``"P3_claude"`` / ``"P3c"`` / ``"claude"``
+            charge ``cascade/protocol_claude.md`` si disponible.
+
+    Returns:
+        Contenu texte du protocole à injecter dans le prompt Qwen.
+    """
+    if prompt_id in ("P3_claude", "P3c", "claude"):
+        p = CASCADE_DIR / "protocol_claude.md"
+        if p.exists():
+            return p.read_text(encoding="utf-8")
     return (CASCADE_DIR / "protocol.md").read_text(encoding="utf-8")
 
 
@@ -360,10 +463,24 @@ def _prefix_related(a: str, b: str) -> bool:
 
 
 def has_topical_bridge(anchor: str, target: str) -> bool:
-    """Vrai si T_ref et T_n partagent une entité / thème lexical fort.
+    """Détecte si deux titres d'articles partagent une entité ou un thème fort.
 
-    Filet anti-faux-NR (Starbucks, AI, Ukraine, climate).
-    Ne doit PAS lier fillers T4–T6 via mots faibles ni un seul nom (Trump seul).
+    Sert de filet anti-faux-NR : si deux articles traitent du même sujet
+    (Ukraine, IA, Starbucks, …), la cascade ne doit pas les marquer
+    ``not_related`` même si la similarité cosine est faible.
+
+    Critères de ponts acceptés :
+    - Deux fiches-personne type « Prénom Nom - Media » identiques.
+    - Au moins un token de contenu fort en commun (hors stop-words,
+      hors noms de médias, hors entités faibles seules comme « trump »).
+    - Préfixe morphologique entre deux tokens forts (ex. ``ukraine/ukrainian``).
+
+    Args:
+        anchor: Titre de l'article de référence.
+        target: Titre de l'article candidat.
+
+    Returns:
+        ``True`` si un pont topical a été détecté, ``False`` sinon.
     """
     if _is_person_directory_headline(anchor) and _is_person_directory_headline(target):
         return True
@@ -393,18 +510,28 @@ def enforce_label_sim_consistency(
     anchor: str | None = None,
     target: str | None = None,
 ) -> str:
-    """Aligne related et similarity (garde-fou post-LLM / post-SBERT).
+    """Aligne le label annoté avec le score de similarité (garde-fou post-LLM).
 
-    Logique metier :
-    - pont topical lexical + not_related  => undetermined (anti-faux-NR T1/T2)
-    - undetermined sans pont + sim <= nr_max (0.3) => not_related
-      (NE PAS utiliser 0.4 : ça contredisait « sim>0.3 → never NR »)
-    - sim <= 0.2 sans pont               => not_related
-    - not_related + sim > 0.3            => undetermined
-      (aligné protocole : never NR si sim>0.3, sauf templates)
-    - faux pont lexical force NR seulement si sim <= nr_max
+    Applique les règles du protocole VLDBench pour corriger les incohérences
+    entre la décision du modèle et la similarité cosine SBERT :
 
-    Ne convertit JAMAIS vers supporting.
+    - Pont topical détecté + ``not_related``   → ``undetermined`` (anti-faux-NR).
+    - ``undetermined`` sans pont + sim ≤ 0.3   → ``not_related``.
+    - sim ≤ 0.2 sans pont                      → ``not_related``.
+    - ``not_related`` + sim > 0.3              → ``undetermined`` (protocole).
+    - Faux pont lexical + sim ≤ 0.3            → ``not_related``.
+    - ``against`` / ``supporting``             : jamais écrasés par le seul score.
+
+    Ne convertit **jamais** un label vers ``supporting``.
+
+    Args:
+        label: Label proposé par le modèle.
+        score: Score cosine SBERT (``similarity_annotation``), peut être ``None``.
+        anchor: Titre de l'article de référence (pour le pont topical).
+        target: Titre de l'article candidat (pour le pont topical).
+
+    Returns:
+        Label final corrigé, garanti dans ``VALID_LABELS``.
     """
     cfg = load_config()
     cutoff = float(cfg["score_not_related_cutoff"])
@@ -1221,14 +1348,11 @@ def build_prompt(prompt_id: str, anchor: str, target: str, few_shot: list[dict])
             "Training examples (apply the same logic):\n"
             f"{examples}\n---\nAnnotate:\n{pair}\nJSON only."
         )
-    protocol = load_protocol()
+    protocol = load_protocol(prompt_id)
     if prompt_id == "P1":
         return f"{protocol}\n\n---\nAnnotate:\n{pair}\nJSON only."
-    # P3: protocole court + few-shot + HARD ultra-court (évite mur de texte ignoré)
-    return (
-        f"{protocol}\n\n"
-        "Few-shot (mirror these; first of each label = main guardrail):\n"
-        f"{examples}\n---\n"
+    # P3 / P3_claude: protocole + few-shot + HARD ultra-court
+    hard = (
         "HARD (read last): "
         "1) Write P from T_ref. against ONLY if T_n asserts ¬P on the SAME P "
         "(opposite outcome: fastest↔worst, rise↔fall, blocked↔resumes, killed-jobs↔didn't-kill, "
@@ -1241,6 +1365,20 @@ def build_prompt(prompt_id: str, anchor: str, target: str, few_shot: list[dict])
         "Wordle #N vs #M / pure filler → not_related. "
         "4) Unsure supporting vs against (no ¬P) → supporting. Unsure against vs undet → undetermined. "
         "5) Zero bridge only → not_related. sim>0.3 → never NR.\n"
+    )
+    if prompt_id in ("P3_claude", "P3c", "claude"):
+        hard = (
+            "HARD (read last): "
+            "Follow Steps 0–4. against = ¬P on same P only. "
+            "sim>0.3 → never not_related. same person ≠ supporting. "
+            "fury/debate without ¬P → undetermined. "
+            "Unsure support vs against → supporting; unsure against vs undet → undetermined.\n"
+        )
+    return (
+        f"{protocol}\n\n"
+        "Few-shot (mirror these; first of each label = main guardrail):\n"
+        f"{examples}\n---\n"
+        f"{hard}"
         f"Annotate:\n{pair}\nJSON only."
     )
 
